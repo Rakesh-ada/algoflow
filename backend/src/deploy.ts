@@ -798,7 +798,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
         webhookId: null,
       });
 
-      await addDeployment({
+      const deployment = await addDeployment({
         projectId: project.id,
         domain: label,
         cid,
@@ -819,6 +819,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
         url: siteUrl,
         gatewayUrl: siteUrl,
         rawGatewayUrl: siteUrl,
+        txId: deployment.txId || null,
       });
     } catch (error: unknown) {
       console.error("Deployment workflow failed:", error);

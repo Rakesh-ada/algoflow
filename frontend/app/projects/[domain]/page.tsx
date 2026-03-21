@@ -192,6 +192,7 @@ export default function ProjectPage() {
                         <th className="pb-4 font-bold">#</th>
                         <th className="pb-4 font-bold">CID</th>
                         <th className="pb-4 font-bold">ENV</th>
+                        <th className="pb-4 font-bold">TX</th>
                         <th className="pb-4 font-bold">DEPLOYER</th>
                         <th className="pb-4 font-bold">DATE</th>
                         <th className="pb-4 font-bold text-right">LINK</th>
@@ -214,6 +215,20 @@ export default function ProjectPage() {
                             }`}>
                               {deploy.env}
                             </span>
+                          </td>
+                          <td className="py-4 font-mono text-xs text-tg-muted">
+                            {deploy.txId && deploy.txExplorerUrl ? (
+                              <a
+                                href={deploy.txExplorerUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hover:text-white transition-colors"
+                              >
+                                {deploy.txId.slice(0, 10)}...{deploy.txId.slice(-6)}
+                              </a>
+                            ) : (
+                              <span>-</span>
+                            )}
                           </td>
                           <td className="py-4 font-mono text-xs text-tg-muted">
                             {deploy.deployer ? `${deploy.deployer.slice(0, 6)}...${deploy.deployer.slice(-4)}` : "-"}

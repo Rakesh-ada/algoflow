@@ -32,6 +32,7 @@ export interface Deployment {
   deployer: string;
   timestamp: number;
   url: string;
+  txId?: string;
 }
 
 interface Database {
@@ -362,7 +363,22 @@ async function fetchChainEvents(): Promise<ChainEvent[]> {
         const parsed = JSON.parse(eventPayload) as unknown;
 
         if (isChainEvent(parsed)) {
-          events.push(parsed);
+          let event = parsed;
+          if (
+            event.type === "deployment_add" &&
+            !(event.deployment as { txId?: string }).txId &&
+            typeof (transaction as { id?: unknown }).id === "string"
+          ) {
+            event = {
+              ...event,
+              deployment: {
+                ...event.deployment,
+                txId: (transaction as { id: string }).id,
+              },
+            };
+          }
+
+          events.push(event);
         }
       } catch {
         // Ignore malformed notes.
@@ -443,7 +459,7 @@ async function loadDb(force = false): Promise<Database> {
   }
 }
 
-async function appendEvent(event: ChainEvent): Promise<void> {
+async function appendEvent(event: ChainEvent): Promise<string> {
   if (!adminAccount) {
     throw new Error(
       "Algorand persistence is not configured. Set ADMIN_ALGO_MNEMONIC so project history can be written to chain."
@@ -473,11 +489,26 @@ async function appendEvent(event: ChainEvent): Promise<void> {
   });
 
   const signedTxn = txn.signTxn(adminAccount.sk);
-  await algodClient.sendRawTransaction(signedTxn).do();
+  const sendResult = await algodClient.sendRawTransaction(signedTxn).do();
+  const txId =
+    typeof (sendResult as { txId?: unknown }).txId === "string"
+      ? (sendResult as { txId: string }).txId
+      : txn.txID();
+
+  if (event.type === "deployment_add") {
+    normalizedEvent = {
+      ...normalizedEvent,
+      deployment: {
+        ...normalizedEvent.deployment,
+        txId,
+      },
+    };
+  }
 
   applyEvent(cachedDb, normalizedEvent);
   sortDb(cachedDb);
   cachedAt = Date.now();
+  return txId;
 }
 
 // Database bootstrap
@@ -632,13 +663,15 @@ export async function addDeployment(data: Omit<Deployment, "id">): Promise<Deplo
     deployer: owner,
   };
 
-  await appendEvent({
+  const txId = await appendEvent({
     v: 1,
     type: "deployment_add",
     wallet: owner,
     timestamp: deployment.timestamp || nowSeconds(),
     deployment,
   });
+
+  deployment.txId = txId;
 
   return deployment;
 }

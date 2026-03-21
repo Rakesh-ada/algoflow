@@ -215,6 +215,8 @@ export interface Deploy {
   meta: string;
   timestamp: number;
   url: string;
+  txId?: string | null;
+  txExplorerUrl?: string | null;
 }
 
 export interface SiteDetail {
@@ -274,6 +276,8 @@ export interface DeployReceipt {
   url?: string;
   gatewayUrl?: string;
   rawGatewayUrl?: string;
+  txId?: string | null;
+  txExplorerUrl?: string | null;
   [key: string]: unknown;
 }
 

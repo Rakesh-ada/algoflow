@@ -462,6 +462,18 @@ export default function DeployPage() {
                       </a>
                     </div>
                   )}
+                  {receipt.txId && (
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold opacity-60 uppercase text-xs tracking-widest">Txn</span>
+                      {receipt.txExplorerUrl ? (
+                        <a href={String(receipt.txExplorerUrl)} target="_blank" rel="noopener noreferrer" className="font-mono text-xs underline">
+                          {receipt.txId.slice(0, 10)}...{receipt.txId.slice(-6)}
+                        </a>
+                      ) : (
+                        <span className="font-mono text-xs">{receipt.txId.slice(0, 10)}...{receipt.txId.slice(-6)}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-4 flex space-x-3">
                   <Link href={`/projects/${encodeURIComponent(receipt.domain || normalizeDomain(projectName))}`}>

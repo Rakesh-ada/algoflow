@@ -17,6 +17,9 @@ const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-m
 const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "gateway.pinata.cloud";
 const PINATA_JWT = process.env.PINATA_JWT || "";
 const DIRECT_GATEWAY_BASE = (process.env.DIRECT_GATEWAY_BASE || `https://${PINATA_GATEWAY}/ipfs`).trim();
+const ALGO_EXPLORER_TX_BASE = (
+  process.env.ALGO_EXPLORER_TX_BASE || "https://testnet.explorer.perawallet.app/tx"
+).trim();
 
 export const sitesRouter = new Hono();
 
@@ -84,6 +87,12 @@ function deploymentUrlForRecord(deployment: Deployment): string {
   return persisted;
 }
 
+function deploymentTxExplorerUrl(txId?: string): string | null {
+  if (!txId) return null;
+  const base = ALGO_EXPLORER_TX_BASE.replace(/\/+$/, "");
+  return `${base}/${encodeURIComponent(txId)}`;
+}
+
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header("Authorization");
   if (!authHeader) return c.json({ error: "Unauthorized" }, 401);
@@ -135,6 +144,8 @@ sitesRouter.get("/:domain", authMiddleware, async (c) => {
           meta: latest.meta,
           timestamp: latest.timestamp,
           url: deploymentUrlForRecord(latest),
+          txId: latest.txId || null,
+          txExplorerUrl: deploymentTxExplorerUrl(latest.txId),
         }
       : null,
     history: deployments.map((deployment) => ({
@@ -144,6 +155,8 @@ sitesRouter.get("/:domain", authMiddleware, async (c) => {
       meta: deployment.meta,
       timestamp: deployment.timestamp,
       url: deploymentUrlForRecord(deployment),
+      txId: deployment.txId || null,
+      txExplorerUrl: deploymentTxExplorerUrl(deployment.txId),
     })),
   });
 });

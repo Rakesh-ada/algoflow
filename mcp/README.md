@@ -12,6 +12,9 @@ This MCP server lets agentic IDEs deploy generated code directly to your W3DEPLO
 - `deploy_code_to_ipfs`
   - Calls backend `POST /api/mcp/deploy-code`
   - Requires JWT, wallet address, challenge ID and wallet signature
+- `get_deployment_history`
+  - Calls backend `GET /api/sites/:domain`
+  - Returns deployment history with chain tx IDs and explorer URLs
 
 ## Run
 
@@ -31,6 +34,8 @@ npm.cmd run start
 
 - `W3DEPLOY_API_BASE` (optional, default `http://localhost:8080`)
 - `W3DEPLOY_WALLET_ADDRESS` (recommended, current user Algorand wallet address)
+- `W3DEPLOY_API_TOKEN` (recommended for authenticated MCP calls)
+- `W3DEPLOY_EVM_PRIVATE_KEY` (optional, enables automatic challenge signing for EVM wallets)
 
 ## Example MCP client config
 
@@ -73,6 +78,26 @@ npm.cmd run start
     { "path": "styles.css", "content": "h1 { color: teal; }" }
   ],
   "notes": "Agent deploy",
-  "env": "production"
+  "env": "production",
+  "projectName": "my-agent-site",
+  "appPreset": "static",
+  "rootDirectory": ".",
+  "installCommand": "npm install --no-fund --no-audit",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "envVars": [
+    { "key": "API_BASE", "value": "https://example.com" }
+  ]
+}
+```
+
+## get_deployment_history input example
+
+```json
+{
+  "jwtToken": "<jwt>",
+  "walletAddress": "<wallet>",
+  "domain": "my-agent-site",
+  "limit": 10
 }
 ```

@@ -23,6 +23,9 @@ const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-m
 const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "gateway.pinata.cloud";
 const DIRECT_GATEWAY_BASE = (process.env.DIRECT_GATEWAY_BASE || `https://${PINATA_GATEWAY}/ipfs`).trim();
 const DIRECT_GATEWAY_BASES = (process.env.DIRECT_GATEWAY_BASES || "").trim();
+const ALGO_EXPLORER_TX_BASE = (
+  process.env.ALGO_EXPLORER_TX_BASE || "https://testnet.explorer.perawallet.app/tx"
+).trim();
 const TEMP_ROOT = path.join(os.tmpdir(), "w3deploy", "mcp");
 const MAX_FILES = 1000;
 const MAX_PATH_LENGTH = 200;
@@ -60,6 +63,18 @@ type DeployCodeBody = {
 };
 
 type FileWithWebkitPath = File & { webkitRelativePath?: string };
+
+type DeployMeta = {
+  notes?: string;
+  env?: string;
+  rootDirectory?: string;
+  installCommand?: string;
+  buildCommand?: string;
+  outputDirectory?: string;
+  projectName?: string;
+  appPreset?: string;
+  envVars?: { key: string; value: string }[];
+};
 
 export const mcpRouter = new Hono();
 
@@ -211,46 +226,44 @@ function validateChallengeOwnership(
   return { ok: true };
 }
 
-function parseMetaSafe(raw: unknown): {
-  notes?: string;
-  env?: string;
-  rootDirectory?: string;
-  installCommand?: string;
-  buildCommand?: string;
-  outputDirectory?: string;
-} {
+function parseMetaSafe(raw: unknown): DeployMeta {
   if (typeof raw === "string" && raw.trim()) {
     try {
-      return JSON.parse(raw) as {
-        notes?: string;
-        env?: string;
-        rootDirectory?: string;
-        installCommand?: string;
-        buildCommand?: string;
-        outputDirectory?: string;
-      };
+      return JSON.parse(raw) as DeployMeta;
     } catch {
       return { notes: raw };
     }
   }
 
   if (raw && typeof raw === "object") {
-    const obj = raw as { notes?: unknown; env?: unknown };
+    const obj = raw as Record<string, unknown>;
+    const parsedEnvVars = Array.isArray(obj.envVars)
+      ? obj.envVars
+          .filter((item): item is { key?: unknown; value?: unknown } => Boolean(item && typeof item === "object"))
+          .map((item) => ({
+            key: typeof item.key === "string" ? item.key : "",
+            value: typeof item.value === "string" ? item.value : "",
+          }))
+      : undefined;
+
     return {
       notes: typeof obj.notes === "string" ? obj.notes : undefined,
       env: typeof obj.env === "string" ? obj.env : undefined,
-      rootDirectory: typeof (obj as { rootDirectory?: unknown }).rootDirectory === "string"
-        ? (obj as { rootDirectory?: string }).rootDirectory
+      rootDirectory: typeof obj.rootDirectory === "string"
+        ? obj.rootDirectory
         : undefined,
-      installCommand: typeof (obj as { installCommand?: unknown }).installCommand === "string"
-        ? (obj as { installCommand?: string }).installCommand
+      installCommand: typeof obj.installCommand === "string"
+        ? obj.installCommand
         : undefined,
-      buildCommand: typeof (obj as { buildCommand?: unknown }).buildCommand === "string"
-        ? (obj as { buildCommand?: string }).buildCommand
+      buildCommand: typeof obj.buildCommand === "string"
+        ? obj.buildCommand
         : undefined,
-      outputDirectory: typeof (obj as { outputDirectory?: unknown }).outputDirectory === "string"
-        ? (obj as { outputDirectory?: string }).outputDirectory
+      outputDirectory: typeof obj.outputDirectory === "string"
+        ? obj.outputDirectory
         : undefined,
+      projectName: typeof obj.projectName === "string" ? obj.projectName : undefined,
+      appPreset: typeof obj.appPreset === "string" ? obj.appPreset : undefined,
+      envVars: parsedEnvVars,
     };
   }
 
@@ -383,13 +396,89 @@ async function detectPackageManager(projectDir: string): Promise<"npm" | "pnpm" 
   return "npm";
 }
 
-async function prepareStaticOutput(projectDir: string, meta: { installCommand?: string; buildCommand?: string; outputDirectory?: string }): Promise<string> {
+async function readPackageJson(projectDir: string): Promise<Record<string, unknown> | null> {
   const packageJsonPath = path.join(projectDir, "package.json");
+  if (!(await pathExists(packageJsonPath))) {
+    return null;
+  }
 
   try {
-    await fs.stat(packageJsonPath);
+    const raw = await fs.readFile(packageJsonPath, "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
   } catch {
-    return detectBuildOutputDirectory(projectDir, meta.outputDirectory);
+    return null;
+  }
+}
+
+function hasAnyDependency(packageJson: Record<string, unknown>, names: string[]): boolean {
+  const dependencies = (packageJson.dependencies || {}) as Record<string, unknown>;
+  const devDependencies = (packageJson.devDependencies || {}) as Record<string, unknown>;
+  return names.some((name) => Boolean(dependencies[name] || devDependencies[name]));
+}
+
+async function hasAnyReactFileMarkers(projectDir: string): Promise<boolean> {
+  const markers = [
+    "vite.config.ts",
+    "vite.config.js",
+    "vite.config.mts",
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+    "src/main.tsx",
+    "src/main.jsx",
+    "src/App.tsx",
+    "src/App.jsx",
+    "app/layout.tsx",
+    "app/page.tsx",
+  ];
+
+  for (const marker of markers) {
+    if (await pathExists(path.join(projectDir, marker))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function detectProjectKind(projectDir: string, packageJson: Record<string, unknown> | null, meta: DeployMeta): Promise<"react" | "html"> {
+  const preset = (meta.appPreset || "").trim().toLowerCase();
+  if (["react", "next", "nextjs", "vite", "react-vite"].includes(preset)) {
+    return "react";
+  }
+  if (["html", "static", "static-html", "plain-html"].includes(preset)) {
+    return "html";
+  }
+
+  if (!packageJson) {
+    return (await hasAnyReactFileMarkers(projectDir)) ? "react" : "html";
+  }
+
+  const scripts = (packageJson.scripts || {}) as Record<string, unknown>;
+  const hasBuildScript = typeof scripts.build === "string" && scripts.build.trim().length > 0;
+  const hasReactDeps = hasAnyDependency(packageJson, [
+    "react",
+    "react-dom",
+    "next",
+    "@vitejs/plugin-react",
+    "@vitejs/plugin-react-swc",
+    "react-scripts",
+  ]);
+
+  return hasReactDeps || hasBuildScript ? "react" : "html";
+}
+
+async function prepareStaticOutput(projectDir: string, meta: DeployMeta): Promise<{ outputDir: string; projectKind: "react" | "html"; installCommand?: string; buildCommand?: string }> {
+  const packageJson = await readPackageJson(projectDir);
+  const projectKind = await detectProjectKind(projectDir, packageJson, meta);
+
+  if (projectKind === "html") {
+    const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
+    return { outputDir, projectKind };
   }
 
   const packageManager = await detectPackageManager(projectDir);
@@ -411,10 +500,25 @@ async function prepareStaticOutput(projectDir: string, meta: { installCommand?: 
       ? "bun run build"
       : "npm run build";
 
-  await runShellCommand((meta.installCommand || defaultInstallCommand).trim(), projectDir);
-  await runShellCommand((meta.buildCommand || defaultBuildCommand).trim(), projectDir);
+  const installCommand = (meta.installCommand || defaultInstallCommand).trim();
+  const buildCommand = (meta.buildCommand || defaultBuildCommand).trim();
 
-  return detectBuildOutputDirectory(projectDir, meta.outputDirectory);
+  await runShellCommand(installCommand, projectDir);
+  await runShellCommand(buildCommand, projectDir);
+
+  const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
+  return {
+    outputDir,
+    projectKind,
+    installCommand,
+    buildCommand,
+  };
+}
+
+function deploymentTxExplorerUrl(txId?: string): string | null {
+  if (!txId) return null;
+  const base = ALGO_EXPLORER_TX_BASE.replace(/\/+$/, "");
+  return `${base}/${encodeURIComponent(txId)}`;
 }
 
 function validateAndNormalizeFiles(input: unknown): Array<{ path: string; content: string }> {
@@ -736,11 +840,14 @@ mcpRouter.post("/deploy-code", authMiddleware, async (c) => {
 
     const projectDir = await resolveProjectDirectory(tempDir, meta.rootDirectory);
 
-    const outputDir = await prepareStaticOutput(projectDir, {
+    const prepared = await prepareStaticOutput(projectDir, {
       installCommand: meta.installCommand,
       buildCommand: meta.buildCommand,
       outputDirectory: meta.outputDirectory,
+      appPreset: meta.appPreset,
     });
+
+    const outputDir = prepared.outputDir;
 
     const uploadRootFolder = normalizeProjectLabel(label || "site");
     const pinataFiles = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
@@ -761,17 +868,17 @@ mcpRouter.post("/deploy-code", authMiddleware, async (c) => {
     const project = await upsertProject(label, walletAddress, {
       repoFullName: "agent://mcp",
       branch: "main",
-      rootDirectory: "./",
-      buildCommand: "none",
-      installCommand: "none",
-      outputDirectory: "./",
-      appPreset: "mcp-agent",
-      envVars: [],
+      rootDirectory: meta.rootDirectory || "./",
+      buildCommand: prepared.buildCommand || meta.buildCommand || "none",
+      installCommand: prepared.installCommand || meta.installCommand || "none",
+      outputDirectory: meta.outputDirectory || "",
+      appPreset: meta.appPreset || prepared.projectKind,
+      envVars: meta.envVars || [],
       env: meta.env || "production",
       webhookId: null,
     });
 
-    await addDeployment({
+    const deployment = await addDeployment({
       projectId: project.id,
       domain: label,
       cid,
@@ -791,6 +898,8 @@ mcpRouter.post("/deploy-code", authMiddleware, async (c) => {
       gatewayUrl: siteUrl,
       rawGatewayUrl: siteUrl,
       files: files.length,
+      txId: deployment.txId || null,
+      txExplorerUrl: deploymentTxExplorerUrl(deployment.txId),
       activeDeploys: getActiveDeployCount(),
       maxDeploys: getMaxConcurrent(),
     });

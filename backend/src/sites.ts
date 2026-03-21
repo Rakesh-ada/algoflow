@@ -16,7 +16,6 @@ import {
 const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-me";
 const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "gateway.pinata.cloud";
 const PINATA_JWT = process.env.PINATA_JWT || "";
-const DIRECT_GATEWAY_BASE = (process.env.DIRECT_GATEWAY_BASE || `https://${PINATA_GATEWAY}/ipfs`).trim();
 const ALGO_EXPLORER_TX_BASE = (
   process.env.ALGO_EXPLORER_TX_BASE || "https://testnet.explorer.perawallet.app/tx"
 ).trim();
@@ -39,41 +38,31 @@ function getWalletFromRequest(c: any): string | null {
   return normalizeWalletAddress(wallet);
 }
 
-function stripTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function isPublicPinataGatewayUrl(value: string): boolean {
-  try {
-    const host = new URL(value).hostname.toLowerCase();
-    return host === "gateway.pinata.cloud";
-  } catch {
-    return false;
+function buildCanonicalIpfsUrl(cid: string, suffix = ""): string {
+  const cleanCid = cid.replace(/^\/+|\/+$/g, "");
+  const cleanSuffix = suffix.replace(/^\/+|\/+$/g, "");
+  if (!cleanSuffix) {
+    return `https://ipfs.io/ipfs/${cleanCid}/`;
   }
+  return `https://ipfs.io/ipfs/${cleanCid}/${cleanSuffix}/`;
 }
 
-function preferredGatewayBase(): string {
-  const configured = stripTrailingSlashes(DIRECT_GATEWAY_BASE);
-  if (configured && !isPublicPinataGatewayUrl(configured)) {
-    return configured;
-  }
-  return "https://ipfs.io/ipfs";
-}
-
-function pinataGatewayUrl(cid: string): string {
-  return `${preferredGatewayBase()}/${cid}/`;
-}
-
-function rewritePublicPinataUrl(value: string, fallbackCid: string): string {
+function parseIpfsPath(value: string): { cid: string; suffix: string } | null {
   try {
     const parsed = new URL(value);
     const match = parsed.pathname.match(/^\/ipfs\/([^/]+)(\/.*)?$/i);
-    const cid = match?.[1] || fallbackCid;
-    const suffix = match?.[2] || "/";
-    return `${preferredGatewayBase()}/${cid}${suffix}`;
+    if (!match?.[1]) return null;
+    return {
+      cid: match[1],
+      suffix: (match[2] || "/").replace(/^\/+|\/+$/g, ""),
+    };
   } catch {
-    return pinataGatewayUrl(fallbackCid);
+    return null;
   }
+}
+
+function pinataGatewayUrl(cid: string): string {
+  return buildCanonicalIpfsUrl(cid);
 }
 
 function deploymentUrlForRecord(deployment: Deployment): string {
@@ -81,10 +70,13 @@ function deploymentUrlForRecord(deployment: Deployment): string {
   if (!persisted || persisted.includes("/deployments/")) {
     return pinataGatewayUrl(deployment.cid);
   }
-  if (isPublicPinataGatewayUrl(persisted)) {
-    return rewritePublicPinataUrl(persisted, deployment.cid);
+
+  const parsedIpfs = parseIpfsPath(persisted);
+  if (parsedIpfs) {
+    return buildCanonicalIpfsUrl(parsedIpfs.cid, parsedIpfs.suffix);
   }
-  return persisted;
+
+  return pinataGatewayUrl(deployment.cid);
 }
 
 function deploymentTxExplorerUrl(txId?: string): string | null {

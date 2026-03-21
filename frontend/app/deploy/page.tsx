@@ -65,6 +65,7 @@ export default function DeployPage() {
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [reposError, setReposError] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("new-project");
+  const [rootDirectory, setRootDirectory] = useState("");
   const [dotEnvText, setDotEnvText] = useState("");
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
@@ -198,10 +199,17 @@ export default function DeployPage() {
     setReceipt(null);
     setErrMsg(null);
 
-    const deployMeta = {
+    const deployMeta: {
+      projectName: string;
+      envVars: EnvVarRow[];
+      rootDirectory?: string;
+    } = {
       projectName: trimmedProjectName,
       envVars: parsedEnvVars,
     };
+    if (rootDirectory.trim()) {
+      deployMeta.rootDirectory = rootDirectory.trim();
+    }
 
     abortRef.current = deployStream(
       {
@@ -283,6 +291,18 @@ export default function DeployPage() {
                   disabled={isDeploying}
                   required
                   className="w-full bg-tg-black border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder-tg-muted focus:outline-none focus:border-tg-lavender transition-colors disabled:opacity-50"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold tracking-widest uppercase text-tg-muted mb-2">Root Directory (Optional)</label>
+                <input
+                  type="text"
+                  value={rootDirectory}
+                  onChange={(e) => setRootDirectory(e.target.value)}
+                  disabled={isDeploying}
+                  placeholder="./frontend or ./portfolio"
+                  className="w-full bg-tg-black border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder-tg-muted focus:outline-none focus:border-tg-lavender transition-colors disabled:opacity-50 font-mono"
                 />
               </div>
 

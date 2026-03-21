@@ -24,10 +24,33 @@ const pinata = new PinataSDK({
 
 const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-me";
 const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "gateway.pinata.cloud";
-const DIRECT_GATEWAY_BASE = (process.env.DIRECT_GATEWAY_BASE || `https://${PINATA_GATEWAY}/ipfs`).trim();
-const DIRECT_GATEWAY_BASES = (process.env.DIRECT_GATEWAY_BASES || "").trim();
 const TEMP_ROOT = path.join(os.tmpdir(), "w3deploy");
-const BUILD_OUTPUT_CANDIDATES = ["dist", "out", "build", ".next/static", ".next"] as const;
+const STATIC_OUTPUT_CANDIDATES = ["dist", "out", "build"] as const;
+const REACT_BUILD_OUTPUT_CANDIDATES = ["dist", "build", "out"] as const;
+const BACKEND_DEPENDENCY_HINTS = [
+  "express",
+  "koa",
+  "fastify",
+  "@nestjs/core",
+  "@nestjs/common",
+  "hono",
+  "socket.io",
+  "prisma",
+  "@prisma/client",
+  "typeorm",
+  "mongoose",
+] as const;
+const FRONTEND_DEPENDENCY_HINTS = [
+  "react",
+  "react-dom",
+  "next",
+  "vue",
+  "svelte",
+  "@vitejs/plugin-react",
+  "@vitejs/plugin-react-swc",
+  "@vitejs/plugin-vue",
+  "vite",
+] as const;
 
 type DeployRequestBody = {
   repoUrl?: unknown;
@@ -55,6 +78,7 @@ type CommandResult = {
 type FileWithWebkitPath = File & { webkitRelativePath?: string };
 type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type ProjectKind = "react" | "html";
+type DeployEnvVar = { key: string; value: string };
 
 type ProjectPreparation = {
   projectKind: ProjectKind;
@@ -354,31 +378,88 @@ function defaultBuildCommand(packageManager: PackageManager): string {
   return "npm run build";
 }
 
+function hasBuildScript(packageJson: Record<string, unknown> | null): boolean {
+  if (!packageJson) return false;
+  const scripts = (packageJson.scripts || {}) as Record<string, unknown>;
+  return typeof scripts.build === "string" && scripts.build.trim().length > 0;
+}
+
+function isLikelyBackendOnlyPackage(packageJson: Record<string, unknown> | null): boolean {
+  if (!packageJson) return false;
+
+  const hasBackendDependencies = hasAnyDependency(packageJson, [...BACKEND_DEPENDENCY_HINTS]);
+  const hasFrontendDependencies = hasAnyDependency(packageJson, [...FRONTEND_DEPENDENCY_HINTS]);
+
+  return hasBackendDependencies && !hasFrontendDependencies;
+}
+
+function isNpmInstallCommand(command: string): boolean {
+  return /^npm\s+(install|ci)\b/i.test(command.trim());
+}
+
+function hasLegacyPeerDepsFlag(command: string): boolean {
+  return /\s--legacy-peer-deps(\s|$)/i.test(command);
+}
+
+function isPeerDependencyConflictError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("eresolve") ||
+    message.includes("upstream dependency conflict") ||
+    message.includes("--legacy-peer-deps")
+  );
+}
+
+async function runInstallWithFallback(
+  installCommand: string,
+  projectDir: string,
+  onLog?: (line: string) => void
+): Promise<string> {
+  try {
+    await runShellCommandStreaming(installCommand, projectDir, onLog);
+    return installCommand;
+  } catch (error) {
+    if (
+      isNpmInstallCommand(installCommand) &&
+      !hasLegacyPeerDepsFlag(installCommand) &&
+      isPeerDependencyConflictError(error)
+    ) {
+      const fallbackCommand = `${installCommand} --legacy-peer-deps`;
+      onLog?.("npm install hit peer dependency conflict (ERESOLVE). Retrying with --legacy-peer-deps...");
+      await runShellCommandStreaming(fallbackCommand, projectDir, onLog);
+      return fallbackCommand;
+    }
+
+    throw error;
+  }
+}
+
 async function prepareProjectForDeployment(
   projectDir: string,
   meta: DeployMeta,
   onLog?: (line: string) => void
 ): Promise<ProjectPreparation> {
   const packageJson = await readPackageJson(projectDir);
-  const projectKind = await detectProjectKind(projectDir, packageJson, meta);
 
-  if (projectKind === "html") {
-    const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
-    return { projectKind, outputDir };
+  if (
+    isLikelyBackendOnlyPackage(packageJson) &&
+    !(await pathExists(path.join(projectDir, "index.html"))) &&
+    !(await hasAnyReactFileMarkers(projectDir))
+  ) {
+    throw new Error(
+      'Selected root appears to be a backend service. This platform only uploads frontend sites. ' +
+        'Choose a frontend root directory such as "./frontend" or "./portfolio".'
+    );
   }
 
-  const packageManager = await detectPackageManager(projectDir);
-  const installCommand = (meta.installCommand || defaultInstallCommand(packageManager)).trim();
-  const buildCommand = (meta.buildCommand || defaultBuildCommand(packageManager)).trim();
+  const forcedPreset = (meta.appPreset || "").trim().toLowerCase();
+  if (forcedPreset && forcedPreset !== "html" && forcedPreset !== "static") {
+    onLog?.(`Project preset "${forcedPreset}" ignored: this service deploys static sites only.`);
+  }
 
-  onLog?.(`Detected React project. Using package manager: ${packageManager}`);
-  onLog?.(`Running install: ${installCommand}`);
-  await runShellCommandStreaming(installCommand, projectDir, onLog);
-  onLog?.(`Running build: ${buildCommand}`);
-  await runShellCommandStreaming(buildCommand, projectDir, onLog);
-
-  const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
-  return { projectKind, outputDir, installCommand, buildCommand };
+  onLog?.("Static-only mode enabled: skipping install/build and uploading existing frontend files.");
+  const outputDir = await detectStaticOutputDirectory(projectDir, meta.outputDirectory);
+  return { projectKind: "html", outputDir };
 }
 
 async function sendEvent(
@@ -398,7 +479,7 @@ async function sendLog(stream: SSEStreamingApi, line: string): Promise<void> {
   await sendEvent(stream, "log", { line: trimmed });
 }
 
-async function detectBuildOutputDirectory(projectDir: string, customOutput?: string): Promise<string> {
+async function detectStaticOutputDirectory(projectDir: string, customOutput?: string): Promise<string> {
   if (customOutput && customOutput.trim()) {
     const customPath = path.join(projectDir, customOutput.trim());
     try {
@@ -409,7 +490,7 @@ async function detectBuildOutputDirectory(projectDir: string, customOutput?: str
     }
   }
 
-  for (const candidate of BUILD_OUTPUT_CANDIDATES) {
+  for (const candidate of STATIC_OUTPUT_CANDIDATES) {
     const candidatePath = path.join(projectDir, candidate);
     try {
       const stats = await fs.stat(candidatePath);
@@ -419,11 +500,218 @@ async function detectBuildOutputDirectory(projectDir: string, customOutput?: str
     }
   }
 
-  return projectDir;
+  if (await pathExists(path.join(projectDir, "index.html"))) {
+    return projectDir;
+  }
+
+  throw new Error(
+    "No frontend static output found in the selected root. " +
+      'Use rootDirectory like "./frontend" or "./portfolio", or set outputDirectory like "dist".'
+  );
+}
+
+async function detectReactBuildOutputDirectory(projectDir: string, customOutput?: string): Promise<string> {
+  if (customOutput && customOutput.trim()) {
+    const customPath = path.join(projectDir, customOutput.trim());
+    try {
+      const stats = await fs.stat(customPath);
+      if (stats.isDirectory()) {
+        return customPath;
+      }
+    } catch {
+      throw new Error(
+        `Configured outputDirectory "${customOutput}" was not found after build.`
+      );
+    }
+  }
+
+  for (const candidate of REACT_BUILD_OUTPUT_CANDIDATES) {
+    const candidatePath = path.join(projectDir, candidate);
+    try {
+      const stats = await fs.stat(candidatePath);
+      if (stats.isDirectory()) {
+        return candidatePath;
+      }
+    } catch {
+      // Keep scanning.
+    }
+  }
+
+  throw new Error(
+    "React build output not found. Expected one of: dist, build, out. " +
+      "Do not deploy source files directly. Set outputDirectory if your framework uses a different folder."
+  );
 }
 
 function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+function normalizeRuntimeEnvVars(envVars: DeployEnvVar[]): Record<string, string> {
+  const runtimeVars: Record<string, string> = {};
+
+  for (const envVar of envVars) {
+    const key = (envVar.key || "").trim();
+    if (!key) continue;
+    runtimeVars[key] = envVar.value ?? "";
+  }
+
+  return runtimeVars;
+}
+
+async function listHtmlFiles(rootDir: string): Promise<string[]> {
+  const htmlFiles: string[] = [];
+  const skipDirs = new Set([".git", "node_modules"]);
+
+  async function walk(currentDir: string): Promise<void> {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (skipDirs.has(entry.name)) continue;
+        await walk(absolutePath);
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".html")) {
+        htmlFiles.push(absolutePath);
+      }
+    }
+  }
+
+  await walk(rootDir);
+  return htmlFiles;
+}
+
+function applyHtmlEnvPlaceholders(content: string, runtimeVars: Record<string, string>): string {
+  let next = content;
+  for (const [key, value] of Object.entries(runtimeVars)) {
+    next = next.split(`{{${key}}}`).join(value);
+  }
+  return next;
+}
+
+function injectRuntimeEnvScriptTag(content: string, scriptSrc: string): string {
+  if (content.includes(scriptSrc)) {
+    return content;
+  }
+
+  const scriptTag = `<script src="${scriptSrc}"></script>`;
+
+  if (/<\/head>/i.test(content)) {
+    return content.replace(/<\/head>/i, `  ${scriptTag}\n</head>`);
+  }
+
+  if (/<\/body>/i.test(content)) {
+    return content.replace(/<\/body>/i, `  ${scriptTag}\n</body>`);
+  }
+
+  return `${scriptTag}\n${content}`;
+}
+
+function isLikelyStaticAssetPath(pathname: string): boolean {
+  const ext = path.posix.extname(pathname.toLowerCase());
+  return new Set([
+    ".js",
+    ".mjs",
+    ".css",
+    ".map",
+    ".json",
+    ".wasm",
+    ".ico",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".mp4",
+    ".webm",
+  ]).has(ext);
+}
+
+function splitPathAndSuffix(value: string): { pathOnly: string; suffix: string } {
+  const match = value.match(/^([^?#]*)([?#].*)?$/);
+  return {
+    pathOnly: match?.[1] || value,
+    suffix: match?.[2] || "",
+  };
+}
+
+function rewriteRootAbsoluteAssetUrls(content: string, htmlRelativePath: string): { content: string; rewrites: number } {
+  const htmlDir = path.posix.dirname(toPosixPath(htmlRelativePath));
+  let rewrites = 0;
+
+  const next = content.replace(
+    /(\b(?:src|href)\s*=\s*["'])\/(?!\/|#)([^"']+)(["'])/gi,
+    (full, prefix: string, target: string, suffixQuote: string) => {
+      const { pathOnly, suffix } = splitPathAndSuffix(target);
+      if (!isLikelyStaticAssetPath(pathOnly)) {
+        return full;
+      }
+
+      const normalizedTarget = pathOnly.replace(/^\/+/, "");
+      let relativeTarget = path.posix.relative(htmlDir, normalizedTarget);
+      if (!relativeTarget || !relativeTarget.startsWith(".")) {
+        relativeTarget = `./${relativeTarget}`;
+      }
+      rewrites += 1;
+      return `${prefix}${relativeTarget}${suffix}${suffixQuote}`;
+    }
+  );
+
+  return { content: next, rewrites };
+}
+
+async function injectRuntimeEnvForStaticOutput(
+  outputDir: string,
+  envVars: DeployEnvVar[]
+): Promise<{ envCount: number; htmlUpdated: number; assetUrlRewrites: number }> {
+  const runtimeVars = normalizeRuntimeEnvVars(envVars);
+  const envCount = Object.keys(runtimeVars).length;
+  let runtimeScriptPath: string | null = null;
+  if (envCount > 0) {
+    const runtimeScriptName = "w3deploy-env.js";
+    runtimeScriptPath = path.join(outputDir, runtimeScriptName);
+    const scriptBody = `window.__W3DEPLOY_ENV__ = Object.freeze(${JSON.stringify(runtimeVars, null, 2)});\n`;
+    await fs.writeFile(runtimeScriptPath, scriptBody, "utf-8");
+  }
+
+  const htmlFiles = await listHtmlFiles(outputDir);
+  let htmlUpdated = 0;
+  let assetUrlRewrites = 0;
+
+  for (const htmlFilePath of htmlFiles) {
+    const originalContent = await fs.readFile(htmlFilePath, "utf-8");
+    const htmlRelativePath = toPosixPath(path.relative(outputDir, htmlFilePath));
+    const rewriteResult = rewriteRootAbsoluteAssetUrls(originalContent, htmlRelativePath);
+    assetUrlRewrites += rewriteResult.rewrites;
+
+    const withPlaceholders =
+      envCount > 0 ? applyHtmlEnvPlaceholders(rewriteResult.content, runtimeVars) : rewriteResult.content;
+    const withScript =
+      envCount > 0 && runtimeScriptPath
+        ? injectRuntimeEnvScriptTag(
+            withPlaceholders,
+            (() => {
+              const relativeScriptPath = toPosixPath(path.relative(path.dirname(htmlFilePath), runtimeScriptPath));
+              return relativeScriptPath.startsWith(".") ? relativeScriptPath : `./${relativeScriptPath}`;
+            })()
+          )
+        : withPlaceholders;
+
+    if (withScript !== originalContent) {
+      await fs.writeFile(htmlFilePath, withScript, "utf-8");
+      htmlUpdated += 1;
+    }
+  }
+
+  return { envCount, htmlUpdated, assetUrlRewrites };
 }
 
 async function collectOutputFilesForPinata(outputDir: string, rootFolderName: string): Promise<File[]> {
@@ -474,37 +762,19 @@ async function collectOutputFilesForPinata(outputDir: string, rootFolderName: st
   return files;
 }
 
-function buildDirectGatewayFolderUrl(cid: string, folderPath = ""): string {
-  const base = stripTrailingSlashes(DIRECT_GATEWAY_BASE);
-  const suffix = folderPath ? `${folderPath.replace(/^\/+|\/+$/g, "")}/` : "";
-  return `${base}/${cid}/${suffix}`;
-}
-
-function isPublicPinataGateway(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase();
-    return host === "gateway.pinata.cloud";
-  } catch {
-    return false;
+function buildCanonicalIpfsUrl(cid: string, suffix = ""): string {
+  const cleanCid = cid.replace(/^\/+|\/+$/g, "");
+  const cleanSuffix = suffix.replace(/^\/+|\/+$/g, "");
+  if (!cleanSuffix) {
+    return `https://ipfs.io/ipfs/${cleanCid}/`;
   }
+  return `https://ipfs.io/ipfs/${cleanCid}/${cleanSuffix}/`;
 }
 
 function buildGatewayBaseCandidates(): string[] {
-  const configuredList = DIRECT_GATEWAY_BASES
-    ? DIRECT_GATEWAY_BASES.split(",").map((value) => value.trim()).filter(Boolean)
-    : [];
-
-  const defaults = ["https://ipfs.io/ipfs", DIRECT_GATEWAY_BASE, "https://dweb.link/ipfs"];
-  const unique = new Set<string>();
-
-  for (const candidate of [...configuredList, ...defaults]) {
-    const normalized = stripTrailingSlashes(candidate);
-    if (!normalized) continue;
-    if (isPublicPinataGateway(normalized)) continue;
-    unique.add(normalized);
-  }
-
-  return [...unique];
+  // Always prefer canonical public gateway links in API responses.
+  // We keep dweb.link as fallback reachability probe only.
+  return ["https://ipfs.io/ipfs", "https://dweb.link/ipfs"];
 }
 
 async function isGatewayPathReachable(url: string): Promise<boolean> {
@@ -570,17 +840,25 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName: string): Promis
   const candidates: string[] = [];
 
   for (const base of gatewayBases) {
-    candidates.push(`${base}/${cid}/`);
     candidates.push(`${base}/${cid}/${rootPath}/`);
+    candidates.push(`${base}/${cid}/`);
   }
 
   for (const candidate of candidates) {
     if (await isGatewayPathReachable(candidate)) {
-      return candidate;
+      try {
+        const parsed = new URL(candidate);
+        const match = parsed.pathname.match(/^\/ipfs\/([^/]+)(\/.*)?$/i);
+        const urlCid = match?.[1] || cid;
+        const suffix = (match?.[2] || "/").replace(/^\/+|\/+$/g, "");
+        return buildCanonicalIpfsUrl(urlCid, suffix);
+      } catch {
+        return buildCanonicalIpfsUrl(cid, rootPath);
+      }
     }
   }
 
-  return `https://ipfs.io/ipfs/${cid}/`;
+  return buildCanonicalIpfsUrl(cid, rootPath);
 }
 
 async function getCommitHash(repoDir: string): Promise<string> {
@@ -628,10 +906,6 @@ function parseMetaSafe(raw: unknown): DeployMeta {
   }
 
   return {};
-}
-
-function stripTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
 }
 
 function normalizeProjectLabel(value: string): string {
@@ -752,6 +1026,19 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
 
       const outputDir = prepared.outputDir;
       await sendLog(stream, `Build output directory: ${path.relative(workDir, outputDir) || path.basename(outputDir)}`);
+
+      if (prepared.projectKind === "html") {
+        const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, envVars);
+        if (runtimeEnvResult.assetUrlRewrites > 0) {
+          await sendLog(stream, `Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
+        }
+        if (runtimeEnvResult.envCount > 0) {
+          await sendLog(stream, `Injected runtime env for static HTML (${runtimeEnvResult.envCount} key(s)).`);
+        }
+        if (runtimeEnvResult.htmlUpdated > 0) {
+          await sendLog(stream, `Updated ${runtimeEnvResult.htmlUpdated} HTML file(s).`);
+        }
+      }
 
       await sendLog(stream, "Collecting static files for direct IPFS upload...");
       const uploadRootFolder = normalizeProjectLabel(meta.projectName || label || "site");
@@ -885,6 +1172,19 @@ export async function triggerDeploy(
 
     const outputDir = prepared.outputDir;
     log(`Output directory: ${path.basename(outputDir)}`);
+
+    if (prepared.projectKind === "html") {
+      const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, envVars);
+      if (runtimeEnvResult.assetUrlRewrites > 0) {
+        log(`Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
+      }
+      if (runtimeEnvResult.envCount > 0) {
+        log(`Injected runtime env for static HTML (${runtimeEnvResult.envCount} key(s)).`);
+      }
+      if (runtimeEnvResult.htmlUpdated > 0) {
+        log(`Updated ${runtimeEnvResult.htmlUpdated} HTML file(s).`);
+      }
+    }
 
     const safeLabel = label.replace(/[^a-zA-Z0-9.-]/g, "-");
     const uploadRootFolder = normalizeProjectLabel(projectMeta.projectName || label || "site");

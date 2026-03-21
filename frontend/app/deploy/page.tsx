@@ -200,7 +200,6 @@ export default function DeployPage() {
 
     const deployMeta = {
       projectName: trimmedProjectName,
-      appPreset: "static",
       envVars: parsedEnvVars,
     };
 

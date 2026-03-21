@@ -24,6 +24,11 @@ function shortCid(cid: string) {
   return cid.length > 18 ? `${cid.slice(0, 9)}...${cid.slice(-8)}` : cid;
 }
 
+function shortTxHash(txId?: string | null) {
+  if (!txId) return "-";
+  return txId.length > 24 ? `${txId.slice(0, 12)}...${txId.slice(-10)}` : txId;
+}
+
 export default function ProjectPage() {
   const router = useRouter();
   const { domain: rawDomain } = useParams<{ domain: string }>();
@@ -152,6 +157,25 @@ export default function ProjectPage() {
                   {site.latest.meta && (
                     <p className="text-tg-black/70 text-sm mt-1 italic">{site.latest.meta}</p>
                   )}
+                  {site.latest.txId ? (
+                    <div className="mt-4">
+                      <p className="text-tg-black/60 text-xs font-bold tracking-widest uppercase">Algorand Tx Hash</p>
+                      {site.latest.txExplorerUrl ? (
+                        <a
+                          href={site.latest.txExplorerUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-xs text-tg-black hover:underline break-all"
+                        >
+                          {site.latest.txId}
+                        </a>
+                      ) : (
+                        <p className="font-mono text-xs text-tg-black break-all">{site.latest.txId}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-tg-black/60 text-xs mt-4">Algorand transaction hash not found for this deploy.</p>
+                  )}
                 </div>
                 <div className="flex items-center space-x-3 mt-6">
                   <a
@@ -217,15 +241,19 @@ export default function ProjectPage() {
                             </span>
                           </td>
                           <td className="py-4 font-mono text-xs text-tg-muted">
-                            {deploy.txId && deploy.txExplorerUrl ? (
-                              <a
-                                href={deploy.txExplorerUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="hover:text-white transition-colors"
-                              >
-                                {deploy.txId.slice(0, 10)}...{deploy.txId.slice(-6)}
-                              </a>
+                            {deploy.txId ? (
+                              deploy.txExplorerUrl ? (
+                                <a
+                                  href={deploy.txExplorerUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="hover:text-white transition-colors"
+                                >
+                                  {shortTxHash(deploy.txId)}
+                                </a>
+                              ) : (
+                                <span>{shortTxHash(deploy.txId)}</span>
+                              )
                             ) : (
                               <span>-</span>
                             )}
@@ -259,4 +287,3 @@ export default function ProjectPage() {
     </div>
   );
 }
-

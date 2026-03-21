@@ -22,6 +22,11 @@ function shortCid(cid: string) {
   return cid.length > 14 ? `${cid.slice(0, 7)}...${cid.slice(-6)}` : cid;
 }
 
+function shortTxHash(txId?: string | null) {
+  if (!txId) return "-";
+  return txId.length > 22 ? `${txId.slice(0, 10)}...${txId.slice(-8)}` : txId;
+}
+
 function timeAgo(ts: number) {
   const diff = Math.floor((Date.now() - ts * 1000) / 1000);
   if (diff < 60) return `${diff}s ago`;
@@ -419,6 +424,7 @@ function DashboardContent() {
                       <th className="pb-4 px-4 font-bold">DOMAIN</th>
                       <th className="pb-4 px-4 font-bold">STATUS</th>
                       <th className="pb-4 px-4 font-bold">LATEST CID</th>
+                      <th className="pb-4 px-4 font-bold">LATEST TX</th>
                       <th className="pb-4 px-4 font-bold">ENV</th>
                       <th className="pb-4 px-4 font-bold">DEPLOYED</th>
                       <th className="pb-4 px-4 font-bold text-right">ACTION</th>
@@ -455,6 +461,24 @@ function DashboardContent() {
                         </td>
                         <td className="py-6 px-4 font-mono text-sm text-tg-muted">
                           {detail?.latest ? shortCid(detail.latest.cid) : "-"}
+                        </td>
+                        <td className="py-6 px-4 font-mono text-xs text-tg-muted">
+                          {detail?.latest?.txId ? (
+                            detail.latest.txExplorerUrl ? (
+                              <a
+                                href={detail.latest.txExplorerUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hover:text-white transition-colors"
+                              >
+                                {shortTxHash(detail.latest.txId)}
+                              </a>
+                            ) : (
+                              <span>{shortTxHash(detail.latest.txId)}</span>
+                            )
+                          ) : (
+                            "-"
+                          )}
                         </td>
                         <td className="py-6 px-4">
                           {detail?.latest?.env ? (
@@ -510,4 +534,3 @@ export default function DashboardPage() {
     </Suspense>
   );
 }
-

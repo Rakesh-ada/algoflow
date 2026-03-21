@@ -5,24 +5,26 @@ import Navbar from "@/components/navbar";
 
 const MCP_WALKTHROUGH_URL = "https://youtu.be/bf5vnTr1Sz0?si=qxrd3ytSfnMnMp_u";
 
-const MCP_CONFIG = `{
-  "preferences": {
-    "coworkWebSearchEnabled": true,
-    "coworkScheduledTasksEnabled": false,
-    "ccdScheduledTasksEnabled": false
+const MCP_CONFIG_OBJECT = {
+  preferences: {
+    coworkWebSearchEnabled: true,
+    coworkScheduledTasksEnabled: false,
+    ccdScheduledTasksEnabled: false,
   },
-  "mcpServers": {
-    "w3deploy": {
-      "command": "D:/project/w3deploy/mcp/start-mcp.cmd",
-      "env": {
-        "W3DEPLOY_API_BASE": "http://localhost:8080",
-        "W3DEPLOY_WALLET_ADDRESS": "<YOUR_WALLET_ADDRESS>",
-        "W3DEPLOY_API_TOKEN": "<YOUR_PRODUCTION_JWT>",
-        "W3DEPLOY_EVM_PRIVATE_KEY": "<YOUR_PRIVATE_KEY_IF_AUTOSIGN>"
-      }
-    }
-  }
-}`;
+  mcpServers: {
+    w3deploy: {
+      command: "w3deploy-mcp",
+      env: {
+        W3DEPLOY_API_BASE: "http://localhost:8080",
+        W3DEPLOY_WALLET_ADDRESS: "<YOUR_WALLET_ADDRESS>",
+        W3DEPLOY_API_TOKEN: "<YOUR_PRODUCTION_JWT>",
+        W3DEPLOY_EVM_PRIVATE_KEY: "<YOUR_PRIVATE_KEY_IF_AUTOSIGN>",
+      },
+    },
+  },
+} as const;
+
+const MCP_CONFIG = JSON.stringify(MCP_CONFIG_OBJECT, null, 2);
 
 function CopyIcon({ copied }: { copied: boolean }) {
   if (copied) {
@@ -101,7 +103,7 @@ function SyntaxLine({ line }: { line: string }) {
   }
 
   return (
-    <span>
+    <span className="whitespace-pre">
       {parts.map((part, idx) => (
         <span key={idx} style={{ color: part.charColor || part.color }}>
           {part.text}

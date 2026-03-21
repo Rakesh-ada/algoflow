@@ -119,14 +119,12 @@ export default function Navbar() {
 
       {/* Right side */}
       <div className="flex items-center space-x-6">
-        <a
-          href="#"
-          target="_blank"
-          rel="noopener noreferrer"
+        <Link
+          href="/docs"
           className="text-sm font-medium text-tg-muted cursor-pointer hover:text-white transition-colors tracking-widest"
         >
           DOCS
-        </a>
+        </Link>
 
         <Link
           href="/mcp"

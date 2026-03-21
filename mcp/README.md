@@ -16,10 +16,11 @@ This MCP server lets agentic IDEs deploy generated code directly to your W3DEPLO
   - Calls backend `GET /api/sites/:domain`
   - Returns deployment history with chain tx IDs and explorer URLs
 
-## Run
+## Run (local development)
 
 ```bash
 npm install
+npm run build
 npm run start
 ```
 
@@ -27,7 +28,35 @@ On Windows PowerShell where execution policy blocks npm scripts, run:
 
 ```powershell
 npm.cmd install
+npm.cmd run build
 npm.cmd run start
+```
+
+## Global command setup
+
+This package now exposes a CLI command: `w3deploy-mcp`.
+
+After publishing to npm (or installing from a git source), install globally:
+
+```bash
+npm i -g w3deploy-mcp
+```
+
+Then any MCP client can use:
+
+```json
+{
+  "mcpServers": {
+    "w3deploy": {
+      "command": "w3deploy-mcp",
+      "env": {
+        "W3DEPLOY_API_BASE": "https://api.yourdomain.com",
+        "W3DEPLOY_WALLET_ADDRESS": "YOUR_WALLET_ADDRESS",
+        "W3DEPLOY_API_TOKEN": "YOUR_PRODUCTION_JWT"
+      }
+    }
+  }
+}
 ```
 
 ## Environment
@@ -37,7 +66,25 @@ npm.cmd run start
 - `W3DEPLOY_API_TOKEN` (recommended for authenticated MCP calls)
 - `W3DEPLOY_EVM_PRIVATE_KEY` (optional, enables automatic challenge signing for EVM wallets)
 
-## Example MCP client config
+## Example MCP client config (portable via npx)
+
+```json
+{
+  "mcpServers": {
+    "w3deploy": {
+      "command": "npx",
+      "args": ["-y", "w3deploy-mcp@latest"],
+      "env": {
+        "W3DEPLOY_API_BASE": "https://api.yourdomain.com",
+        "W3DEPLOY_WALLET_ADDRESS": "YOUR_WALLET_ADDRESS",
+        "W3DEPLOY_API_TOKEN": "YOUR_PRODUCTION_JWT"
+      }
+    }
+  }
+}
+```
+
+## Example MCP client config (local repository)
 
 ```json
 {

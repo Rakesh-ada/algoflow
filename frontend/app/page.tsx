@@ -15,18 +15,18 @@ export default function Home() {
           <section className="md:col-span-8 rounded-card bg-tg-lavender p-8 md:p-12 flex flex-col justify-between h-100 text-tg-black transition-transform duration-200 hover:-translate-y-0.5">
             <div>
               <h1 className="font-display text-3xl md:text-5xl font-extrabold leading-tight tracking-tighter">
-                Censorship-Resistant<br />Hosting
+                Build Your First<br />dApp
               </h1>
               <p className="mt-4 text-base font-medium opacity-80 max-w-md">
-                Deploy decentralized applications directly to IPFS
-                with millisecond latency. No servers. No censorship.
-                Unstoppable.
+                Create simple HTML/CSS/JS Web3 sites with wallet connect,
+                smart-contract interactions, and transaction flows, then deploy
+                to IPFS in minutes.
               </p>
             </div>
             <div className="flex items-center space-x-4">
               <Link href="/login">
                 <button className="bg-tg-black text-white px-8 py-4 rounded-full font-bold text-sm tracking-wide flex items-center space-x-2 hover:opacity-90 transition-all">
-                  <span>GET STARTED</span>
+                  <span>BUILD YOUR FIRST DAPP</span>
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" />
                   </svg>
@@ -64,10 +64,10 @@ export default function Home() {
               </svg>
             </div>
             <div>
-              <h3 className="font-display text-xl font-bold mb-2">GitHub CI/CD</h3>
+              <h3 className="font-display text-xl font-bold mb-2">Web3 Starter Flow</h3>
               <p className="text-tg-black/70 text-sm leading-relaxed">
-                Connect your repo and every push to <span className="font-mono font-bold">main</span> auto-deploys
-                to IPFS. Zero config continuous delivery.
+                Start from a clean dApp template with wallet connect and
+                contract calls ready, then customize and deploy.
               </p>
             </div>
           </div>
@@ -95,9 +95,10 @@ export default function Home() {
               </svg>
             </div>
             <div>
-              <h3 className="font-display text-xl font-bold mb-2">Deployment History</h3>
+              <h3 className="font-display text-xl font-bold mb-2">Wallet + Contract Ready</h3>
               <p className="text-tg-black/70 text-sm leading-relaxed">
-                Track releases with timestamps, commit hashes, and immutable CIDs to instantly audit rollouts.
+                Add MetaMask, send transactions, and connect to multiple
+                smart contracts from a static site hosted on IPFS.
               </p>
             </div>
           </div>
@@ -109,18 +110,18 @@ export default function Home() {
               {[
                 {
                   step: "01",
-                  title: "Connect your repo",
-                  desc: "Authenticate with GitHub and link your repository to automatically listen for pushes.",
+                  title: "Pick your dApp starter",
+                  desc: "Start from a simple static template designed for wallet connection and contract interaction.",
                 },
                 {
                   step: "02",
-                  title: "Push to deploy",
-                  desc: "Each push to your branch automatically builds your project and pins the output to IPFS.",
+                  title: "Connect wallet + contracts",
+                  desc: "Configure chain IDs, contract addresses, and ABIs to power real on-chain actions.",
                 },
                 {
                   step: "03",
-                  title: "Agent Deployment",
-                  desc: "Use your IDE's built-in MCP to let our AI agents build and deploy your project automatically via chat.",
+                  title: "Deploy to IPFS",
+                  desc: "Publish instantly to IPFS and keep immutable versions so your dApp can be shared anywhere.",
                 },
               ].map(({ step, title, desc }) => (
                 <div key={step} className="space-y-4">
@@ -148,7 +149,7 @@ export default function Home() {
             <div className="flex items-center space-x-4 shrink-0">
               <Link href="/mcp">
                 <button className="bg-tg-lavender text-tg-black px-8 py-4 rounded-full font-bold text-sm tracking-wide hover:opacity-90 transition-all font-display">
-                  CONNECT NOW →
+                  CONNECT NOW {""}
                 </button>
               </Link>
             </div>

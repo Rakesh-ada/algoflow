@@ -61,9 +61,9 @@ function LoginContent() {
                 </svg>
               </div>
 
-              <h1 className="font-display text-3xl font-extrabold mb-2">Welcome back</h1>
+              <h1 className="font-display text-3xl font-extrabold mb-2">Build your first dApp</h1>
               <p className="text-tg-muted text-sm mb-8">
-                Connect your GitHub to let agents deploy apps securely.
+                Sign in to start building and deploying your first Web3 site on ALGOFLOW.
               </p>
 
               {/* Error banner */}

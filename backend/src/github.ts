@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Hono } from "hono";
 import { verify } from "hono/jwt";
 import {
@@ -17,6 +18,7 @@ export const githubRouter = new Hono();
 const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-me";
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
 const BACKEND_URL = process.env.BACKEND_URL || "";
+const WEBHOOK_SIGNATURE_PREFIX = "sha256=";
 
 function normalizeWalletAddress(value: string): string {
   return value.trim().toUpperCase();
@@ -27,6 +29,40 @@ function getWalletFromRequest(c: any): string | null {
   if (!wallet) return null;
   if (!isValidWalletAddress(wallet)) return null;
   return normalizeWalletAddress(wallet);
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function verifyWebhookSignature(rawBody: string, signatureHeader?: string | null): boolean {
+  if (!WEBHOOK_SECRET) {
+    return true;
+  }
+
+  const signature = (signatureHeader || "").trim();
+  if (!signature.startsWith(WEBHOOK_SIGNATURE_PREFIX)) {
+    return false;
+  }
+
+  const receivedDigest = signature.slice(WEBHOOK_SIGNATURE_PREFIX.length);
+  if (!/^[a-f0-9]{64}$/i.test(receivedDigest)) {
+    return false;
+  }
+
+  const expectedDigest = crypto.createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(receivedDigest.toLowerCase(), "hex"),
+      Buffer.from(expectedDigest.toLowerCase(), "hex")
+    );
+  } catch {
+    return false;
+  }
 }
 
 // ── Auth Middleware ──────────────────────────────────────────────────────────
@@ -245,14 +281,32 @@ githubRouter.get("/connected", authMiddleware, async (c) => {
 // ── POST /webhook — GitHub webhook receiver ──────────────────────────────────
 
 githubRouter.post("/webhook", async (c) => {
-  const payload = await c.req.json();
-  const event = c.req.header("x-github-event");
+  const event = c.req.header("x-github-event") || "";
+  const rawBody = await c.req.text();
+
+  if (!verifyWebhookSignature(rawBody, c.req.header("x-hub-signature-256"))) {
+    console.warn("⚠ GitHub webhook rejected due to invalid signature.");
+    return c.json({ accepted: false, error: "Invalid webhook signature" }, 401);
+  }
+
+  let payload: any = {};
+  if (rawBody.trim()) {
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return c.json({ accepted: false, error: "Invalid JSON payload" }, 400);
+    }
+  }
 
   if (event === "push") {
     const repoFullName = payload.repository?.full_name;
     const branch = payload.ref?.replace("refs/heads/", "");
     const commitHash = payload.head_commit?.id;
     const commitMessage = payload.head_commit?.message;
+
+    if (!repoFullName || !branch) {
+      return c.json({ accepted: false, error: "Missing repository or branch info" }, 400);
+    }
 
     console.log(`\n🔔 GitHub Push: ${repoFullName} @ ${branch}`);
     console.log(`   Commit: ${commitHash?.slice(0, 8)} — ${commitMessage}`);
@@ -291,11 +345,14 @@ githubRouter.post("/webhook", async (c) => {
           envVars: project.envVars,
           env: project.env,
         },
+        branch,
         (line) => console.log(`   [${project.domain}] ${line}`)
       ).then((result) => {
         if (result) {
           console.log(`   ✓ ${project.domain} deployed: CID=${result.cid}`);
         }
+      }).catch((error) => {
+        console.error(`   Auto-deploy failed for ${project.domain}: ${getErrorMessage(error)}`);
       });
     }
 
@@ -378,11 +435,14 @@ async function pollForChanges() {
           envVars: project.envVars,
           env: project.env,
         },
+        project.branch || "main",
         (line) => console.log(`   [Poller:${project.domain}] ${line}`)
       ).then((result) => {
         if (result) {
           console.log(`   ✓ [Poller] ${project.domain} auto-deployed: CID=${result.cid}`);
         }
+      }).catch((error) => {
+        console.error(`   [Poller] Auto-deploy failed for ${project.domain}: ${getErrorMessage(error)}`);
       });
     } catch (err) {
       // Silently skip — don't spam logs with rate limit errors

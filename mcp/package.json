@@ -1,11 +1,20 @@
 {
   "name": "w3deploy-mcp",
   "version": "1.0.0",
-  "private": true,
+  "private": false,
   "type": "module",
+  "bin": {
+    "w3deploy-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts"
+    "start": "node dist/server.js",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2",

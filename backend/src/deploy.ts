@@ -1171,6 +1171,7 @@ export async function triggerDeploy(
   label: string,
   userId: string,
   projectMeta: DeployMeta,
+  branch?: string,
   onLog?: (line: string) => void
 ): Promise<{ cid: string; url: string; commitHash: string } | null> {
   if (!canStartDeploy()) {
@@ -1187,8 +1188,15 @@ export async function triggerDeploy(
   try {
     await fs.mkdir(TEMP_ROOT, { recursive: true });
 
-    log("Cloning repository...");
-    await runCommand("git", ["clone", "--depth", "1", repoUrl, tempDir], TEMP_ROOT);
+    const selectedBranch = (branch || "").trim();
+    const cloneArgs = ["clone", "--depth", "1"];
+    if (selectedBranch) {
+      cloneArgs.push("--branch", selectedBranch, "--single-branch");
+    }
+    cloneArgs.push(repoUrl, tempDir);
+
+    log(selectedBranch ? `Cloning repository (${selectedBranch})...` : "Cloning repository...");
+    await runCommand("git", cloneArgs, TEMP_ROOT);
 
     const workDir = await resolveProjectDirectory(tempDir, projectMeta);
     if (!(await pathExists(workDir))) {

@@ -326,39 +326,61 @@ export function deployStream(
       const decoder = new TextDecoder();
       let buffer = "";
 
+      const processSseBlock = (block: string) => {
+        const lines = block.split(/\r?\n/);
+        let event = "";
+        const dataLines: string[] = [];
+
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            event = line.slice(6).trim();
+            continue;
+          }
+
+          if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+
+        if (!event || dataLines.length === 0) return;
+
+        const dataStr = dataLines.join("\n");
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (event === "log") onLog(parsed.line);
+          else if (event === "done") {
+            onDone({
+              ...(parsed as DeployReceipt),
+              domain: (parsed as DeployReceipt).domain ?? (parsed as { label?: string }).label ?? label,
+              cid: (parsed as DeployReceipt).cid ?? (parsed as { CID?: string }).CID ?? "",
+            });
+          } else if (event === "error") {
+            onError(parsed.message);
+          }
+        } catch {
+          // Ignore malformed SSE payload chunks.
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
+        const chunks = buffer.split(/\r?\n\r?\n/);
         buffer = chunks.pop() ?? "";
 
         for (const chunk of chunks) {
-          const lines = chunk.split("\n");
-          let event = "";
-          let dataStr = "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) event = line.slice(7).trim();
-            else if (line.startsWith("data: ")) dataStr = line.slice(6).trim();
-          }
-          if (!event || !dataStr) continue;
-          try {
-            const parsed = JSON.parse(dataStr);
-            if (event === "log") onLog(parsed.line);
-            else if (event === "done") {
-              onDone({
-                ...(parsed as DeployReceipt),
-                domain: (parsed as DeployReceipt).domain ?? (parsed as { label?: string }).label ?? label,
-                cid: (parsed as DeployReceipt).cid ?? (parsed as { CID?: string }).CID ?? "",
-              });
-            } else if (event === "error") {
-              onError(parsed.message);
-            }
-          } catch {
-            // ignore malformed SSE data
-          }
+          processSseBlock(chunk);
         }
+      }
+
+      // Process any trailing fully-formed block if present when stream closes.
+      if (buffer.trim()) {
+        processSseBlock(buffer);
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {

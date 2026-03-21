@@ -428,12 +428,18 @@ export default function DeployPage() {
 
               <div ref={logRef} className="bg-tg-black rounded-2xl border border-white/5 p-5 h-[26rem] overflow-y-auto font-mono text-xs leading-relaxed">
                 {logs.length === 0 && status === "idle" && <span className="text-tg-muted">Waiting for deployment to start...</span>}
+                {logs.length === 0 && status === "deploying" && (
+                  <span className="text-tg-muted">Connected to deploy stream. Waiting for live build output...</span>
+                )}
                 {logs.map((line, i) => (
                   <div key={i} className={`${line.startsWith("ERROR") ? "text-red-400" : "text-green-400"}`}>
                     <span className="text-tg-muted select-none mr-2">{String(i + 1).padStart(3, "0")}</span>
                     {line}
                   </div>
                 ))}
+                {logs.length === 0 && status === "done" && !errMsg && (
+                  <span className="text-tg-muted">Deployment finished. No verbose build logs were emitted by the backend.</span>
+                )}
                 {errMsg && <div className="text-red-400 mt-2 border-t border-red-500/20 pt-2">x {errMsg}</div>}
               </div>
             </div>

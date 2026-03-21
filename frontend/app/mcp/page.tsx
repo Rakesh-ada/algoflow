@@ -15,7 +15,7 @@ const MCP_CONFIG = `{
     "w3deploy": {
       "command": "D:/project/w3deploy/mcp/start-mcp.cmd",
       "env": {
-        "W3DEPLOY_API_BASE": "https://www.api.web3deploy.me",
+        "W3DEPLOY_API_BASE": "http://localhost:8080",
         "W3DEPLOY_WALLET_ADDRESS": "<YOUR_WALLET_ADDRESS>",
         "W3DEPLOY_API_TOKEN": "<YOUR_PRODUCTION_JWT>",
         "W3DEPLOY_EVM_PRIVATE_KEY": "<YOUR_PRIVATE_KEY_IF_AUTOSIGN>"

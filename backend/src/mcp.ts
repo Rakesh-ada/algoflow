@@ -31,7 +31,29 @@ const MAX_FILES = 1000;
 const MAX_PATH_LENGTH = 200;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const BUILD_OUTPUT_CANDIDATES = ["dist", "out", "build", ".next/static", ".next"] as const;
+const STATIC_OUTPUT_CANDIDATES = ["dist", "out", "build"] as const;
+const FRONTEND_DEPENDENCY_HINTS = [
+  "react",
+  "react-dom",
+  "next",
+  "@vitejs/plugin-react",
+  "@vitejs/plugin-react-swc",
+  "react-scripts",
+  "vite",
+] as const;
+const BACKEND_DEPENDENCY_HINTS = [
+  "express",
+  "koa",
+  "fastify",
+  "@nestjs/core",
+  "@nestjs/common",
+  "hono",
+  "socket.io",
+  "prisma",
+  "@prisma/client",
+  "typeorm",
+  "mongoose",
+] as const;
 
 const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
@@ -270,15 +292,6 @@ function parseMetaSafe(raw: unknown): DeployMeta {
   return {};
 }
 
-function commandExistsInPath(command: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const check = process.platform === "win32" ? `where ${command}` : `command -v ${command}`;
-    const child = spawn(check, { shell: true, stdio: "ignore" });
-    child.on("close", (code) => resolve(code === 0));
-    child.on("error", () => resolve(false));
-  });
-}
-
 function runShellCommand(command: string, cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, {
@@ -330,25 +343,58 @@ async function resolveProjectDirectory(baseDir: string, rootDirectory?: string):
   }
 
   const entries = await fs.readdir(baseDir, { withFileTypes: true });
-  const candidates: string[] = [];
+  const candidates: Array<{ dir: string; name: string }> = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name === ".git" || entry.name === "node_modules") continue;
 
     const candidateDir = path.join(baseDir, entry.name);
     if (await pathExists(path.join(candidateDir, "package.json"))) {
-      candidates.push(candidateDir);
+      candidates.push({ dir: candidateDir, name: entry.name });
     }
   }
 
   if (candidates.length === 1) {
-    return candidates[0];
+    return candidates[0].dir;
+  }
+
+  if (candidates.length > 1) {
+    const scoredCandidates: Array<{ dir: string; score: number }> = [];
+    for (const candidate of candidates) {
+      const packageJson = await readPackageJson(candidate.dir);
+      const hasFrontendDependencies = packageJson
+        ? hasAnyDependency(packageJson, [...FRONTEND_DEPENDENCY_HINTS])
+        : false;
+      const hasBackendDependencies = packageJson
+        ? hasAnyDependency(packageJson, [...BACKEND_DEPENDENCY_HINTS])
+        : false;
+      const hasReactMarkers = await hasAnyReactFileMarkers(candidate.dir);
+      const hasCandidateBuildScript = hasBuildScript(packageJson);
+      const hasFrontendNameHint = /(front|client|web|site|app)/i.test(candidate.name);
+
+      let score = 0;
+      if (hasFrontendDependencies) score += 4;
+      if (hasReactMarkers) score += 3;
+      if (hasCandidateBuildScript) score += 1;
+      if (hasFrontendNameHint) score += 2;
+      if (hasBackendDependencies && !hasFrontendDependencies) score -= 4;
+
+      scoredCandidates.push({ dir: candidate.dir, score });
+    }
+
+    const bestScore = Math.max(...scoredCandidates.map((item) => item.score));
+    if (bestScore > 0) {
+      const bestMatches = scoredCandidates.filter((item) => item.score === bestScore);
+      if (bestMatches.length === 1) {
+        return bestMatches[0].dir;
+      }
+    }
   }
 
   return baseDir;
 }
 
-async function detectBuildOutputDirectory(projectDir: string, customOutput?: string): Promise<string> {
+async function detectStaticOutputDirectory(projectDir: string, customOutput?: string): Promise<string> {
   if (customOutput && customOutput.trim()) {
     const customPath = path.join(projectDir, customOutput.trim());
     try {
@@ -359,7 +405,7 @@ async function detectBuildOutputDirectory(projectDir: string, customOutput?: str
     }
   }
 
-  for (const candidate of BUILD_OUTPUT_CANDIDATES) {
+  for (const candidate of STATIC_OUTPUT_CANDIDATES) {
     const candidatePath = path.join(projectDir, candidate);
     try {
       const stats = await fs.stat(candidatePath);
@@ -369,31 +415,14 @@ async function detectBuildOutputDirectory(projectDir: string, customOutput?: str
     }
   }
 
-  return projectDir;
-}
+  if (await pathExists(path.join(projectDir, "index.html"))) {
+    return projectDir;
+  }
 
-async function detectPackageManager(projectDir: string): Promise<"npm" | "pnpm" | "yarn" | "bun"> {
-  try {
-    await fs.stat(path.join(projectDir, "pnpm-lock.yaml"));
-    if (await commandExistsInPath("pnpm")) return "pnpm";
-  } catch {}
-
-  try {
-    await fs.stat(path.join(projectDir, "yarn.lock"));
-    if (await commandExistsInPath("yarn")) return "yarn";
-  } catch {}
-
-  try {
-    await fs.stat(path.join(projectDir, "bun.lockb"));
-    if (await commandExistsInPath("bun")) return "bun";
-  } catch {}
-
-  try {
-    await fs.stat(path.join(projectDir, "bun.lock"));
-    if (await commandExistsInPath("bun")) return "bun";
-  } catch {}
-
-  return "npm";
+  throw new Error(
+    "No frontend static output found in the selected root. " +
+      'Use rootDirectory like "./frontend" or "./portfolio", or set outputDirectory like "dist".'
+  );
 }
 
 async function readPackageJson(projectDir: string): Promise<Record<string, unknown> | null> {
@@ -418,6 +447,12 @@ function hasAnyDependency(packageJson: Record<string, unknown>, names: string[])
   const dependencies = (packageJson.dependencies || {}) as Record<string, unknown>;
   const devDependencies = (packageJson.devDependencies || {}) as Record<string, unknown>;
   return names.some((name) => Boolean(dependencies[name] || devDependencies[name]));
+}
+
+function hasBuildScript(packageJson: Record<string, unknown> | null): boolean {
+  if (!packageJson) return false;
+  const scripts = (packageJson.scripts || {}) as Record<string, unknown>;
+  return typeof scripts.build === "string" && scripts.build.trim().length > 0;
 }
 
 async function hasAnyReactFileMarkers(projectDir: string): Promise<boolean> {
@@ -445,73 +480,72 @@ async function hasAnyReactFileMarkers(projectDir: string): Promise<boolean> {
   return false;
 }
 
-async function detectProjectKind(projectDir: string, packageJson: Record<string, unknown> | null, meta: DeployMeta): Promise<"react" | "html"> {
-  const preset = (meta.appPreset || "").trim().toLowerCase();
-  if (["react", "next", "nextjs", "vite", "react-vite"].includes(preset)) {
-    return "react";
-  }
-  if (["html", "static", "static-html", "plain-html"].includes(preset)) {
-    return "html";
-  }
+function isNpmInstallCommand(command: string): boolean {
+  return /^npm\s+(install|ci)\b/i.test(command.trim());
+}
 
-  if (!packageJson) {
-    return (await hasAnyReactFileMarkers(projectDir)) ? "react" : "html";
+function hasLegacyPeerDepsFlag(command: string): boolean {
+  return /\s--legacy-peer-deps(\s|$)/i.test(command);
+}
+
+function isPeerDependencyConflictError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("eresolve") ||
+    message.includes("upstream dependency conflict") ||
+    message.includes("--legacy-peer-deps")
+  );
+}
+
+async function runInstallWithFallback(installCommand: string, projectDir: string): Promise<string> {
+  try {
+    await runShellCommand(installCommand, projectDir);
+    return installCommand;
+  } catch (error) {
+    if (
+      isNpmInstallCommand(installCommand) &&
+      !hasLegacyPeerDepsFlag(installCommand) &&
+      isPeerDependencyConflictError(error)
+    ) {
+      const fallbackCommand = `${installCommand} --legacy-peer-deps`;
+      await runShellCommand(fallbackCommand, projectDir);
+      return fallbackCommand;
+    }
+
+    throw error;
   }
-
-  const scripts = (packageJson.scripts || {}) as Record<string, unknown>;
-  const hasBuildScript = typeof scripts.build === "string" && scripts.build.trim().length > 0;
-  const hasReactDeps = hasAnyDependency(packageJson, [
-    "react",
-    "react-dom",
-    "next",
-    "@vitejs/plugin-react",
-    "@vitejs/plugin-react-swc",
-    "react-scripts",
-  ]);
-
-  return hasReactDeps || hasBuildScript ? "react" : "html";
 }
 
 async function prepareStaticOutput(projectDir: string, meta: DeployMeta): Promise<{ outputDir: string; projectKind: "react" | "html"; installCommand?: string; buildCommand?: string }> {
   const packageJson = await readPackageJson(projectDir);
-  const projectKind = await detectProjectKind(projectDir, packageJson, meta);
 
-  if (projectKind === "html") {
-    const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
-    return { outputDir, projectKind };
+  if (packageJson) {
+    let installCommand = "npm install --no-fund --no-audit";
+    const buildCommand = "npm run build";
+
+    installCommand = await runInstallWithFallback(installCommand, projectDir);
+    await runShellCommand(buildCommand, projectDir);
+
+    const distOutput = path.join(projectDir, "dist");
+    if (!(await pathExists(distOutput))) {
+      throw new Error(
+        'package.json was found, build ran, but "./dist" was not generated. ' +
+          'This system expects React output at "./dist".'
+      );
+    }
+
+    return {
+      outputDir: distOutput,
+      projectKind: "react",
+      installCommand,
+      buildCommand,
+    };
   }
 
-  const packageManager = await detectPackageManager(projectDir);
-  const defaultInstallCommand =
-    packageManager === "pnpm"
-      ? "pnpm install --frozen-lockfile"
-      : packageManager === "yarn"
-      ? "yarn install --frozen-lockfile"
-      : packageManager === "bun"
-      ? "bun install"
-      : "npm install --no-fund --no-audit";
-
-  const defaultBuildCommand =
-    packageManager === "pnpm"
-      ? "pnpm run build"
-      : packageManager === "yarn"
-      ? "yarn build"
-      : packageManager === "bun"
-      ? "bun run build"
-      : "npm run build";
-
-  const installCommand = (meta.installCommand || defaultInstallCommand).trim();
-  const buildCommand = (meta.buildCommand || defaultBuildCommand).trim();
-
-  await runShellCommand(installCommand, projectDir);
-  await runShellCommand(buildCommand, projectDir);
-
-  const outputDir = await detectBuildOutputDirectory(projectDir, meta.outputDirectory);
+  const outputDir = await detectStaticOutputDirectory(projectDir, meta.outputDirectory);
   return {
     outputDir,
-    projectKind,
-    installCommand,
-    buildCommand,
+    projectKind: "html",
   };
 }
 

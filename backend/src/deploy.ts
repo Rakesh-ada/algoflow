@@ -265,19 +265,52 @@ async function resolveProjectDirectory(baseDir: string, meta: DeployMeta): Promi
   }
 
   const entries = await fs.readdir(baseDir, { withFileTypes: true });
-  const candidates: string[] = [];
+  const candidates: Array<{ dir: string; name: string }> = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name === ".git" || entry.name === "node_modules") continue;
     const candidateDir = path.join(baseDir, entry.name);
     if (await pathExists(path.join(candidateDir, "package.json"))) {
-      candidates.push(candidateDir);
+      candidates.push({ dir: candidateDir, name: entry.name });
     }
   }
 
   if (candidates.length === 1) {
-    return candidates[0];
+    return candidates[0].dir;
+  }
+
+  if (candidates.length > 1) {
+    const scoredCandidates: Array<{ dir: string; score: number }> = [];
+    for (const candidate of candidates) {
+      const packageJson = await readPackageJson(candidate.dir);
+      const hasFrontendDependencies = packageJson
+        ? hasAnyDependency(packageJson, [...FRONTEND_DEPENDENCY_HINTS])
+        : false;
+      const hasBackendDependencies = packageJson
+        ? hasAnyDependency(packageJson, [...BACKEND_DEPENDENCY_HINTS])
+        : false;
+      const hasReactMarkers = await hasAnyReactFileMarkers(candidate.dir);
+      const hasCandidateBuildScript = hasBuildScript(packageJson);
+      const hasFrontendNameHint = /(front|client|web|site|app)/i.test(candidate.name);
+
+      let score = 0;
+      if (hasFrontendDependencies) score += 4;
+      if (hasReactMarkers) score += 3;
+      if (hasCandidateBuildScript) score += 1;
+      if (hasFrontendNameHint) score += 2;
+      if (hasBackendDependencies && !hasFrontendDependencies) score -= 4;
+
+      scoredCandidates.push({ dir: candidate.dir, score });
+    }
+
+    const bestScore = Math.max(...scoredCandidates.map((item) => item.score));
+    if (bestScore > 0) {
+      const bestMatches = scoredCandidates.filter((item) => item.score === bestScore);
+      if (bestMatches.length === 1) {
+        return bestMatches[0].dir;
+      }
+    }
   }
 
   return baseDir;
@@ -441,23 +474,34 @@ async function prepareProjectForDeployment(
 ): Promise<ProjectPreparation> {
   const packageJson = await readPackageJson(projectDir);
 
-  if (
-    isLikelyBackendOnlyPackage(packageJson) &&
-    !(await pathExists(path.join(projectDir, "index.html"))) &&
-    !(await hasAnyReactFileMarkers(projectDir))
-  ) {
-    throw new Error(
-      'Selected root appears to be a backend service. This platform only uploads frontend sites. ' +
-        'Choose a frontend root directory such as "./frontend" or "./portfolio".'
-    );
+  if (packageJson) {
+    onLog?.("package.json found in selected root. Treating as React build project.");
+
+    let installCommand = "npm install --no-fund --no-audit";
+    const buildCommand = "npm run build";
+
+    onLog?.(`Running install: ${installCommand}`);
+    installCommand = await runInstallWithFallback(installCommand, projectDir, onLog);
+    onLog?.(`Running build: ${buildCommand}`);
+    await runShellCommandStreaming(buildCommand, projectDir, onLog);
+
+    const distOutput = path.join(projectDir, "dist");
+    if (!(await pathExists(distOutput))) {
+      throw new Error(
+        'package.json was found, build ran, but "./dist" was not generated. ' +
+          'This system expects React output at "./dist".'
+      );
+    }
+
+    return {
+      projectKind: "react",
+      outputDir: distOutput,
+      installCommand,
+      buildCommand,
+    };
   }
 
-  const forcedPreset = (meta.appPreset || "").trim().toLowerCase();
-  if (forcedPreset && forcedPreset !== "html" && forcedPreset !== "static") {
-    onLog?.(`Project preset "${forcedPreset}" ignored: this service deploys static sites only.`);
-  }
-
-  onLog?.("Static-only mode enabled: skipping install/build and uploading existing frontend files.");
+  onLog?.("No package.json in selected root. Treating as static HTML/CSS project.");
   const outputDir = await detectStaticOutputDirectory(projectDir, meta.outputDirectory);
   return { projectKind: "html", outputDir };
 }

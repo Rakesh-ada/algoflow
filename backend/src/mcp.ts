@@ -484,6 +484,14 @@ function isNpmInstallCommand(command: string): boolean {
   return /^npm\s+(install|ci)\b/i.test(command.trim());
 }
 
+function hasIncludeDevFlag(command: string): boolean {
+  return /\s--include=dev(\s|$)/i.test(command);
+}
+
+function hasOmitDevFlag(command: string): boolean {
+  return /\s--omit=dev(\s|$)/i.test(command);
+}
+
 function hasLegacyPeerDepsFlag(command: string): boolean {
   return /\s--legacy-peer-deps(\s|$)/i.test(command);
 }
@@ -494,6 +502,17 @@ function isPeerDependencyConflictError(error: unknown): boolean {
     message.includes("eresolve") ||
     message.includes("upstream dependency conflict") ||
     message.includes("--legacy-peer-deps")
+  );
+}
+
+function isMissingBuildToolError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("vite: not found") ||
+    message.includes("react-scripts: not found") ||
+    message.includes("next: not found") ||
+    message.includes("command not found") ||
+    message.includes("is not recognized as an internal or external command")
   );
 }
 
@@ -524,7 +543,22 @@ async function prepareStaticOutput(projectDir: string, meta: DeployMeta): Promis
     const buildCommand = "npm run build";
 
     installCommand = await runInstallWithFallback(installCommand, projectDir);
-    await runShellCommand(buildCommand, projectDir);
+    try {
+      await runShellCommand(buildCommand, projectDir);
+    } catch (buildError) {
+      if (
+        isNpmInstallCommand(installCommand) &&
+        !hasIncludeDevFlag(installCommand) &&
+        !hasOmitDevFlag(installCommand) &&
+        isMissingBuildToolError(buildError)
+      ) {
+        const retryInstallCommand = `${installCommand} --include=dev`;
+        installCommand = await runInstallWithFallback(retryInstallCommand, projectDir);
+        await runShellCommand(buildCommand, projectDir);
+      } else {
+        throw buildError;
+      }
+    }
 
     const distOutput = path.join(projectDir, "dist");
     if (!(await pathExists(distOutput))) {
@@ -618,8 +652,9 @@ function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
-async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
+async function collectOutputFilesForPinata(outputDir: string, rootFolderName: string): Promise<File[]> {
   const files: File[] = [];
+  const normalizedRootFolder = normalizeProjectLabel(rootFolderName || "site");
 
   async function walk(currentDir: string): Promise<void> {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
@@ -642,7 +677,7 @@ async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
       }
 
       const content = await fs.readFile(absolutePath);
-      const uploadPath = relativePath;
+      const uploadPath = `${normalizedRootFolder}/${relativePath}`;
       const file = new File([new Uint8Array(content)], path.basename(relativePath), {
         type: "application/octet-stream",
       }) as FileWithWebkitPath;
@@ -762,11 +797,10 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName?: string): Promi
   const candidates: string[] = [];
 
   for (const base of gatewayBases) {
-    candidates.push(`${base}/${cid}/`);
     if (rootPath) {
-      // Legacy compatibility for older uploads that were nested under a folder.
       candidates.push(`${base}/${cid}/${rootPath}/`);
     }
+    candidates.push(`${base}/${cid}/`);
   }
 
   for (const candidate of candidates) {
@@ -886,7 +920,7 @@ mcpRouter.post("/deploy-code", authMiddleware, async (c) => {
     const outputDir = prepared.outputDir;
 
     const uploadRootFolder = normalizeProjectLabel(label || "site");
-    const pinataFiles = await collectOutputFilesForPinata(outputDir);
+    const pinataFiles = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
     const uploadResult = await pinata.upload.fileArray(pinataFiles, {
       metadata: {
         name: `w3deploy-${label}-${Date.now()}`,

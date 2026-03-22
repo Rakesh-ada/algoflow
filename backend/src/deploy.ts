@@ -436,6 +436,14 @@ function isNpmInstallCommand(command: string): boolean {
   return /^npm\s+(install|ci)\b/i.test(command.trim());
 }
 
+function hasIncludeDevFlag(command: string): boolean {
+  return /\s--include=dev(\s|$)/i.test(command);
+}
+
+function hasOmitDevFlag(command: string): boolean {
+  return /\s--omit=dev(\s|$)/i.test(command);
+}
+
 function hasLegacyPeerDepsFlag(command: string): boolean {
   return /\s--legacy-peer-deps(\s|$)/i.test(command);
 }
@@ -446,6 +454,17 @@ function isPeerDependencyConflictError(error: unknown): boolean {
     message.includes("eresolve") ||
     message.includes("upstream dependency conflict") ||
     message.includes("--legacy-peer-deps")
+  );
+}
+
+function isMissingBuildToolError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("vite: not found") ||
+    message.includes("react-scripts: not found") ||
+    message.includes("next: not found") ||
+    message.includes("command not found") ||
+    message.includes("is not recognized as an internal or external command")
   );
 }
 
@@ -508,7 +527,24 @@ async function prepareProjectForDeployment(
 
     if (buildCommand) {
       onLog?.(`Running build: ${buildCommand}`);
-      await runShellCommandStreaming(buildCommand, projectDir, onLog);
+      try {
+        await runShellCommandStreaming(buildCommand, projectDir, onLog);
+      } catch (buildError) {
+        if (
+          isNpmInstallCommand(installCommand) &&
+          !hasIncludeDevFlag(installCommand) &&
+          !hasOmitDevFlag(installCommand) &&
+          isMissingBuildToolError(buildError)
+        ) {
+          const retryInstallCommand = `${installCommand} --include=dev`;
+          onLog?.("Build tool was not found after install. Retrying install with --include=dev...");
+          installCommand = await runInstallWithFallback(retryInstallCommand, projectDir, onLog);
+          onLog?.(`Retrying build: ${buildCommand}`);
+          await runShellCommandStreaming(buildCommand, projectDir, onLog);
+        } else {
+          throw buildError;
+        }
+      }
     } else {
       onLog?.("No build script found. Skipping build and verifying prebuilt output.");
     }
@@ -808,8 +844,9 @@ async function injectRuntimeEnvForStaticOutput(
   return { envCount, htmlUpdated, assetUrlRewrites };
 }
 
-async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
+async function collectOutputFilesForPinata(outputDir: string, rootFolderName: string): Promise<File[]> {
   const files: File[] = [];
+  const normalizedRootFolder = normalizeProjectLabel(rootFolderName || "site");
 
   async function walk(currentDir: string): Promise<void> {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
@@ -832,7 +869,7 @@ async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
       }
 
       const content = await fs.readFile(absolutePath);
-      const uploadPath = relativePath;
+      const uploadPath = `${normalizedRootFolder}/${relativePath}`;
       const file = new File([new Uint8Array(content)], path.basename(relativePath), {
         type: "application/octet-stream",
       }) as FileWithWebkitPath;
@@ -933,11 +970,10 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName?: string): Promi
   const candidates: string[] = [];
 
   for (const base of gatewayBases) {
-    candidates.push(`${base}/${cid}/`);
     if (rootPath) {
-      // Legacy compatibility for older uploads that were nested under a folder.
       candidates.push(`${base}/${cid}/${rootPath}/`);
     }
+    candidates.push(`${base}/${cid}/`);
   }
 
   for (const candidate of candidates) {
@@ -949,12 +985,12 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName?: string): Promi
         const suffix = (match?.[2] || "/").replace(/^\/+|\/+$/g, "");
         return buildCanonicalIpfsUrl(urlCid, suffix);
       } catch {
-        return buildCanonicalIpfsUrl(cid);
+        return buildCanonicalIpfsUrl(cid, rootPath);
       }
     }
   }
 
-  return buildCanonicalIpfsUrl(cid);
+  return buildCanonicalIpfsUrl(cid, rootPath);
 }
 
 async function getCommitHash(repoDir: string): Promise<string> {
@@ -1152,7 +1188,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
 
       await sendLog(stream, "Collecting static files for direct IPFS upload...");
       const uploadRootFolder = normalizeProjectLabel(meta.projectName || label || "site");
-      const filesToUpload = await collectOutputFilesForPinata(outputDir);
+      const filesToUpload = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
       await sendLog(stream, `Prepared files: ${filesToUpload.length}`);
 
       await sendLog(stream, "Uploading folder to IPFS via Pinata...");
@@ -1309,7 +1345,7 @@ export async function triggerDeploy(
 
     const safeLabel = label.replace(/[^a-zA-Z0-9.-]/g, "-");
     const uploadRootFolder = normalizeProjectLabel(projectMeta.projectName || label || "site");
-    const filesToUpload = await collectOutputFilesForPinata(outputDir);
+    const filesToUpload = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
     const uploadResult = await pinata.upload.fileArray(filesToUpload, {
       metadata: {
         name: `w3deploy-${safeLabel}-${Date.now()}`,

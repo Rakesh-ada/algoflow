@@ -4,6 +4,7 @@ import { useState } from "react";
 import Navbar from "@/components/navbar";
 
 const MCP_WALKTHROUGH_URL = "https://youtu.be/bf5vnTr1Sz0?si=qxrd3ytSfnMnMp_u";
+const MCP_CLI_COMMAND = "npx -y --package w3deploy-mcp w3deploy-cli";
 
 const MCP_CONFIG_OBJECT = {
   preferences: {
@@ -297,6 +298,26 @@ export default function McpPage() {
                   </div>
                 </div>
               ))}
+              </div>
+            </div>
+
+            {/* CLI wizard card */}
+            <div className="rounded-card bg-tg-gray border border-white/5 p-6">
+              <h3 className="font-display font-bold text-lg mb-3">Deploy CLI Wizard</h3>
+              <p className="text-tg-muted text-xs leading-relaxed mb-4">
+                Prefer terminal flow? Use the guided Web + MCP wizard to navigate setup, challenge signing,
+                deployment, and history in one menu.
+              </p>
+
+              <div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3 mb-4 overflow-x-auto">
+                <code className="font-mono text-xs text-tg-lime whitespace-nowrap">{MCP_CLI_COMMAND}</code>
+              </div>
+
+              <div className="space-y-2 text-xs text-tg-muted">
+                <p>1. Run the command above.</p>
+                <p>2. Choose <span className="text-white/90">Setup credentials and URLs</span>.</p>
+                <p>3. Choose <span className="text-white/90">Deploy project folder</span>.</p>
+                <p>4. Use <span className="text-white/90">View deployment history</span> to verify rollout.</p>
               </div>
             </div>
           </div>

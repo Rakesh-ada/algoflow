@@ -27,6 +27,7 @@ const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "gateway.pinata.cloud";
 const TEMP_ROOT = path.join(os.tmpdir(), "w3deploy");
 const STATIC_OUTPUT_CANDIDATES = ["dist", "out", "build"] as const;
 const REACT_BUILD_OUTPUT_CANDIDATES = ["dist", "build", "out"] as const;
+const PUBLIC_ENV_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "REACT_APP_", "PUBLIC_"] as const;
 const BACKEND_DEPENDENCY_HINTS = [
   "express",
   "koa",
@@ -85,6 +86,11 @@ type ProjectPreparation = {
   outputDir: string;
   installCommand?: string;
   buildCommand?: string;
+};
+
+type SplitEnvVars = {
+  publicEnvVars: DeployEnvVar[];
+  blockedEnvKeys: string[];
 };
 
 function getErrorMessage(error: unknown): string {
@@ -591,6 +597,34 @@ function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
+function isPublicClientEnvKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  if (!normalized) return false;
+  return PUBLIC_ENV_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function splitDeployEnvVars(envVars: DeployEnvVar[]): SplitEnvVars {
+  const publicEnvVars: DeployEnvVar[] = [];
+  const blockedEnvKeys: string[] = [];
+
+  for (const envVar of envVars) {
+    const key = (envVar.key || "").trim();
+    if (!key) continue;
+
+    if (isPublicClientEnvKey(key)) {
+      publicEnvVars.push({ key, value: envVar.value ?? "" });
+      continue;
+    }
+
+    blockedEnvKeys.push(key);
+  }
+
+  return {
+    publicEnvVars,
+    blockedEnvKeys,
+  };
+}
+
 function normalizeRuntimeEnvVars(envVars: DeployEnvVar[]): Record<string, string> {
   const runtimeVars: Record<string, string> = {};
 
@@ -1051,14 +1085,25 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
       }
 
       const envVars = meta.envVars || [];
-      if (envVars.length > 0) {
-        await sendLog(stream, `Writing ${envVars.length} environment variable(s)...`);
-        const envContent = envVars
+      const splitEnv = splitDeployEnvVars(envVars);
+
+      if (splitEnv.blockedEnvKeys.length > 0) {
+        throw new Error(
+          "Refused to deploy secret env vars to static IPFS output. " +
+            `Blocked key(s): ${splitEnv.blockedEnvKeys.join(", ")}. ` +
+            "Only public frontend keys are allowed: NEXT_PUBLIC_*, VITE_*, REACT_APP_*, PUBLIC_*. " +
+            "Move secrets to backend env and call them through a backend API/proxy."
+        );
+      }
+
+      if (splitEnv.publicEnvVars.length > 0) {
+        await sendLog(stream, `Writing ${splitEnv.publicEnvVars.length} public environment variable(s)...`);
+        const envContent = splitEnv.publicEnvVars
           .filter((v) => v.key && v.key.trim())
           .map((v) => `${v.key.trim()}=${v.value}`)
           .join("\n");
         await fs.writeFile(path.join(workDir, ".env"), envContent + "\n", "utf-8");
-        await sendLog(stream, "Environment variables written to .env");
+        await sendLog(stream, "Public environment variables written to .env");
       }
 
       const prepared = await prepareProjectForDeployment(workDir, meta, (line) => {
@@ -1072,7 +1117,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
       await sendLog(stream, `Build output directory: ${path.relative(workDir, outputDir) || path.basename(outputDir)}`);
 
       if (prepared.projectKind === "html") {
-        const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, envVars);
+        const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, splitEnv.publicEnvVars);
         if (runtimeEnvResult.assetUrlRewrites > 0) {
           await sendLog(stream, `Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
         }
@@ -1124,7 +1169,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
         installCommand: prepared.installCommand || meta.installCommand || "none",
         outputDirectory: meta.outputDirectory || "",
         appPreset: meta.appPreset || prepared.projectKind,
-        envVars,
+        envVars: splitEnv.publicEnvVars,
         env: meta.env || "production",
         webhookId: null,
       });

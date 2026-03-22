@@ -386,6 +386,10 @@ export default function DeployPage() {
                   placeholder="API_URL=https://example.com"
                   className="w-full min-h-28 bg-tg-black border border-white/10 rounded-2xl px-4 py-3 text-xs text-white placeholder-tg-muted focus:outline-none focus:border-tg-lavender transition-colors disabled:opacity-50 font-mono"
                 />
+                <p className="text-[11px] leading-relaxed text-amber-300/90">
+                  Static IPFS deploys are public. Only frontend-safe keys are allowed: NEXT_PUBLIC_*, VITE_*,
+                  REACT_APP_*, PUBLIC_*. Keep secrets on backend env and access them through an API/proxy route.
+                </p>
               </div>
 
               <div className="flex space-x-3 pt-1">

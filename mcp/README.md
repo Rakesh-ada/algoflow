@@ -35,11 +35,32 @@ npm.cmd run start
 ## Global command setup
 
 This package now exposes a CLI command: `w3deploy-mcp`.
+It also includes an interactive deployment wizard: `w3deploy-cli`.
 
 After publishing to npm (or installing from a git source), install globally:
 
 ```bash
 npm i -g w3deploy-mcp
+```
+
+Run the guided deployment wizard:
+
+```bash
+w3deploy-cli
+```
+
+Wizard menu includes:
+
+- setup credentials and API base
+- MCP connect/health checks
+- deploy folder to `/api/mcp/deploy-code`
+- deployment history lookup from `/api/sites/:domain`
+- Claude MCP config snippet generator
+
+Local development:
+
+```bash
+npm run dev:cli
 ```
 
 Then any MCP client can use:

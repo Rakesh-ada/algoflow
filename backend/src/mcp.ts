@@ -618,9 +618,8 @@ function toPosixPath(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
-async function collectOutputFilesForPinata(outputDir: string, rootFolderName: string): Promise<File[]> {
+async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
   const files: File[] = [];
-  const normalizedRootFolder = normalizeProjectLabel(rootFolderName || "site");
 
   async function walk(currentDir: string): Promise<void> {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
@@ -643,7 +642,7 @@ async function collectOutputFilesForPinata(outputDir: string, rootFolderName: st
       }
 
       const content = await fs.readFile(absolutePath);
-      const uploadPath = `${normalizedRootFolder}/${relativePath}`;
+      const uploadPath = relativePath;
       const file = new File([new Uint8Array(content)], path.basename(relativePath), {
         type: "application/octet-stream",
       }) as FileWithWebkitPath;
@@ -756,7 +755,7 @@ async function isGatewayPathReachable(url: string): Promise<boolean> {
   }
 }
 
-async function resolveDirectSiteUrl(cid: string, rootFolderName: string): Promise<string> {
+async function resolveDirectSiteUrl(cid: string, rootFolderName?: string): Promise<string> {
   const rootPath = normalizeProjectLabel(rootFolderName || "site");
 
   const gatewayBases = buildGatewayBaseCandidates();
@@ -764,7 +763,10 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName: string): Promis
 
   for (const base of gatewayBases) {
     candidates.push(`${base}/${cid}/`);
-    candidates.push(`${base}/${cid}/${rootPath}/`);
+    if (rootPath) {
+      // Legacy compatibility for older uploads that were nested under a folder.
+      candidates.push(`${base}/${cid}/${rootPath}/`);
+    }
   }
 
   for (const candidate of candidates) {
@@ -884,7 +886,7 @@ mcpRouter.post("/deploy-code", authMiddleware, async (c) => {
     const outputDir = prepared.outputDir;
 
     const uploadRootFolder = normalizeProjectLabel(label || "site");
-    const pinataFiles = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
+    const pinataFiles = await collectOutputFilesForPinata(outputDir);
     const uploadResult = await pinata.upload.fileArray(pinataFiles, {
       metadata: {
         name: `w3deploy-${label}-${Date.now()}`,

@@ -416,6 +416,21 @@ export interface ConnectedRepo {
   recentDeploys: Deploy[];
 }
 
+export interface RepoTechStackClassification {
+  owner: string;
+  repo: string;
+  ref: string | null;
+  techStack: "react" | "html";
+  confidence: number;
+  source: "model" | "heuristic" | "fallback";
+  reasons: string[];
+  defaultRootDirectory: string;
+  buildCommand: string;
+  outputDirectory: string;
+  modelId: string | null;
+  scannedItems: string[];
+}
+
 export async function getRepos(): Promise<{ repos: Repo[] }> {
   return apiFetch("/api/github/repos");
 }
@@ -425,6 +440,15 @@ export async function getBranches(
   repo: string
 ): Promise<{ branches: string[] }> {
   return apiFetch(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+}
+
+export async function classifyRepoTechStack(
+  owner: string,
+  repo: string,
+  ref?: string
+): Promise<RepoTechStackClassification> {
+  const qs = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+  return apiFetch(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/classify${qs}`);
 }
 
 export async function connectRepo(data: {

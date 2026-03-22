@@ -1,4 +1,4 @@
-﻿import crypto from "crypto";
+import crypto from "crypto";
 import algosdk from "algosdk";
 
 // Types
@@ -489,15 +489,15 @@ async function appendEvent(event: ChainEvent): Promise<string> {
   });
 
   const signedTxn = txn.signTxn(adminAccount.sk);
-  const sendResult = await algodClient.sendRawTransaction(signedTxn).do();
-  const txId =
-    typeof (sendResult as { txId?: unknown }).txId === "string"
-      ? (sendResult as { txId: string }).txId
-      : txn.txID();
+  const sendResult = (await algodClient.sendRawTransaction(signedTxn).do()) as any;
+  const txId = sendResult.txId || sendResult.txid || txn.txID().toString();
 
-  if (event.type === "deployment_add") {
+  if (normalizedEvent.type === "deployment_add") {
     normalizedEvent = {
-      ...normalizedEvent,
+      v: 1,
+      type: "deployment_add",
+      wallet: normalizedEvent.wallet,
+      timestamp: normalizedEvent.timestamp,
       deployment: {
         ...normalizedEvent.deployment,
         txId,

@@ -480,30 +480,46 @@ async function prepareProjectForDeployment(
 ): Promise<ProjectPreparation> {
   const packageJson = await readPackageJson(projectDir);
 
-  if (packageJson) {
-    onLog?.("package.json found in selected root. Treating as React build project.");
+  if (packageJson && isLikelyBackendOnlyPackage(packageJson)) {
+    throw new Error(
+      "Selected root looks like a backend-only Node service. " +
+        "Use rootDirectory to point to your frontend app (for example ./frontend or ./web)."
+    );
+  }
 
-    let installCommand = "npm install --no-fund --no-audit";
-    const buildCommand = "npm run build";
+  const projectKind = await detectProjectKind(projectDir, packageJson, meta);
 
-    onLog?.(`Running install: ${installCommand}`);
-    installCommand = await runInstallWithFallback(installCommand, projectDir, onLog);
-    onLog?.(`Running build: ${buildCommand}`);
-    await runShellCommandStreaming(buildCommand, projectDir, onLog);
-
-    const distOutput = path.join(projectDir, "dist");
-    if (!(await pathExists(distOutput))) {
+  if (projectKind === "react") {
+    if (!packageJson) {
       throw new Error(
-        'package.json was found, build ran, but "./dist" was not generated. ' +
-          'This system expects React output at "./dist".'
+        "React app markers were detected but package.json was not found in selected root. " +
+          "Set rootDirectory to your app folder or include package.json in that root."
       );
     }
 
+    const packageManager = await detectPackageManager(projectDir);
+    let installCommand = (meta.installCommand || "").trim() || defaultInstallCommand(packageManager);
+    const hasBuild = hasBuildScript(packageJson);
+    const buildCommand = (meta.buildCommand || "").trim() || (hasBuild ? defaultBuildCommand(packageManager) : "");
+
+    onLog?.(`Detected React project (${packageManager}).`);
+    onLog?.(`Running install: ${installCommand}`);
+    installCommand = await runInstallWithFallback(installCommand, projectDir, onLog);
+
+    if (buildCommand) {
+      onLog?.(`Running build: ${buildCommand}`);
+      await runShellCommandStreaming(buildCommand, projectDir, onLog);
+    } else {
+      onLog?.("No build script found. Skipping build and verifying prebuilt output.");
+    }
+
+    const outputDir = await detectReactBuildOutputDirectory(projectDir, meta.outputDirectory);
+
     return {
       projectKind: "react",
-      outputDir: distOutput,
+      outputDir,
       installCommand,
-      buildCommand,
+      buildCommand: buildCommand || undefined,
     };
   }
 
@@ -792,9 +808,8 @@ async function injectRuntimeEnvForStaticOutput(
   return { envCount, htmlUpdated, assetUrlRewrites };
 }
 
-async function collectOutputFilesForPinata(outputDir: string, rootFolderName: string): Promise<File[]> {
+async function collectOutputFilesForPinata(outputDir: string): Promise<File[]> {
   const files: File[] = [];
-  const normalizedRootFolder = normalizeProjectLabel(rootFolderName || "site");
 
   async function walk(currentDir: string): Promise<void> {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
@@ -817,7 +832,7 @@ async function collectOutputFilesForPinata(outputDir: string, rootFolderName: st
       }
 
       const content = await fs.readFile(absolutePath);
-      const uploadPath = `${normalizedRootFolder}/${relativePath}`;
+      const uploadPath = relativePath;
       const file = new File([new Uint8Array(content)], path.basename(relativePath), {
         type: "application/octet-stream",
       }) as FileWithWebkitPath;
@@ -912,14 +927,17 @@ async function isGatewayPathReachable(url: string): Promise<boolean> {
   }
 }
 
-async function resolveDirectSiteUrl(cid: string, rootFolderName: string): Promise<string> {
+async function resolveDirectSiteUrl(cid: string, rootFolderName?: string): Promise<string> {
   const rootPath = normalizeProjectLabel(rootFolderName || "site");
   const gatewayBases = buildGatewayBaseCandidates();
   const candidates: string[] = [];
 
   for (const base of gatewayBases) {
-    candidates.push(`${base}/${cid}/${rootPath}/`);
     candidates.push(`${base}/${cid}/`);
+    if (rootPath) {
+      // Legacy compatibility for older uploads that were nested under a folder.
+      candidates.push(`${base}/${cid}/${rootPath}/`);
+    }
   }
 
   for (const candidate of candidates) {
@@ -931,12 +949,12 @@ async function resolveDirectSiteUrl(cid: string, rootFolderName: string): Promis
         const suffix = (match?.[2] || "/").replace(/^\/+|\/+$/g, "");
         return buildCanonicalIpfsUrl(urlCid, suffix);
       } catch {
-        return buildCanonicalIpfsUrl(cid, rootPath);
+        return buildCanonicalIpfsUrl(cid);
       }
     }
   }
 
-  return buildCanonicalIpfsUrl(cid, rootPath);
+  return buildCanonicalIpfsUrl(cid);
 }
 
 async function getCommitHash(repoDir: string): Promise<string> {
@@ -1116,11 +1134,14 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
       const outputDir = prepared.outputDir;
       await sendLog(stream, `Build output directory: ${path.relative(workDir, outputDir) || path.basename(outputDir)}`);
 
+      const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(
+        outputDir,
+        prepared.projectKind === "html" ? splitEnv.publicEnvVars : []
+      );
+      if (runtimeEnvResult.assetUrlRewrites > 0) {
+        await sendLog(stream, `Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
+      }
       if (prepared.projectKind === "html") {
-        const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, splitEnv.publicEnvVars);
-        if (runtimeEnvResult.assetUrlRewrites > 0) {
-          await sendLog(stream, `Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
-        }
         if (runtimeEnvResult.envCount > 0) {
           await sendLog(stream, `Injected runtime env for static HTML (${runtimeEnvResult.envCount} key(s)).`);
         }
@@ -1131,7 +1152,7 @@ deployRouter.post("/stream", authMiddleware, async (c) => {
 
       await sendLog(stream, "Collecting static files for direct IPFS upload...");
       const uploadRootFolder = normalizeProjectLabel(meta.projectName || label || "site");
-      const filesToUpload = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
+      const filesToUpload = await collectOutputFilesForPinata(outputDir);
       await sendLog(stream, `Prepared files: ${filesToUpload.length}`);
 
       await sendLog(stream, "Uploading folder to IPFS via Pinata...");
@@ -1270,11 +1291,14 @@ export async function triggerDeploy(
     const outputDir = prepared.outputDir;
     log(`Output directory: ${path.basename(outputDir)}`);
 
+    const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(
+      outputDir,
+      prepared.projectKind === "html" ? envVars : []
+    );
+    if (runtimeEnvResult.assetUrlRewrites > 0) {
+      log(`Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
+    }
     if (prepared.projectKind === "html") {
-      const runtimeEnvResult = await injectRuntimeEnvForStaticOutput(outputDir, envVars);
-      if (runtimeEnvResult.assetUrlRewrites > 0) {
-        log(`Rewrote ${runtimeEnvResult.assetUrlRewrites} root-absolute asset URL(s) for IPFS.`);
-      }
       if (runtimeEnvResult.envCount > 0) {
         log(`Injected runtime env for static HTML (${runtimeEnvResult.envCount} key(s)).`);
       }
@@ -1285,7 +1309,7 @@ export async function triggerDeploy(
 
     const safeLabel = label.replace(/[^a-zA-Z0-9.-]/g, "-");
     const uploadRootFolder = normalizeProjectLabel(projectMeta.projectName || label || "site");
-    const filesToUpload = await collectOutputFilesForPinata(outputDir, uploadRootFolder);
+    const filesToUpload = await collectOutputFilesForPinata(outputDir);
     const uploadResult = await pinata.upload.fileArray(filesToUpload, {
       metadata: {
         name: `w3deploy-${safeLabel}-${Date.now()}`,

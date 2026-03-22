@@ -11,11 +11,18 @@ import {
   getRepos,
   Repo,
   deployStream,
+  classifyRepoTechStack,
+  RepoTechStackClassification,
 } from "@/lib/api";
 import Navbar from "@/components/navbar";
 
 type DeployState = "idle" | "deploying" | "done" | "error";
 type EnvVarRow = { key: string; value: string };
+type RepoClassificationState = {
+  loading: boolean;
+  value?: RepoTechStackClassification;
+  error?: string;
+};
 
 function toProjectName(repoFullName: string) {
   const name = repoFullName.split("/")[1] || repoFullName;
@@ -33,6 +40,14 @@ function normalizeDomain(value: string) {
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "") || "new-project";
+}
+
+function parseOwnerRepo(fullName: string): { owner: string; repo: string } | null {
+  const parts = fullName.trim().split("/");
+  if (parts.length !== 2) return null;
+  const [owner, repo] = parts;
+  if (!owner || !repo) return null;
+  return { owner, repo };
 }
 
 function parseDotEnv(raw: string): EnvVarRow[] {
@@ -69,6 +84,7 @@ export default function DeployPage() {
   const [dotEnvText, setDotEnvText] = useState("");
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
+  const [repoClassifications, setRepoClassifications] = useState<Record<string, RepoClassificationState>>({});
   const walletAddress = isConnected && address ? address : null;
   const walletBusy = isConnectingWallet;
 
@@ -80,6 +96,8 @@ export default function DeployPage() {
   const logRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
   const repoMenuRef = useRef<HTMLDivElement>(null);
+
+  const selectedRepoClassification = selectedRepo ? repoClassifications[selectedRepo] : undefined;
 
   const filteredRepos = useMemo(() => {
     const query = repoQuery.trim().toLowerCase();
@@ -110,6 +128,14 @@ export default function DeployPage() {
           setProjectName(name);
           setCloneUrl(`https://github.com/${defaultRepo.fullName}.git`);
         }
+
+        // Prefetch classification for the first few repos to improve UX.
+        const warmupRepos = res.repos.slice(0, 8);
+        for (const repo of warmupRepos) {
+          const parsed = parseOwnerRepo(repo.fullName);
+          if (!parsed) continue;
+          void refreshRepoClassification(parsed.owner, parsed.repo, repo.defaultBranch);
+        }
       } catch (err: unknown) {
         const e = err as Error;
         if (e.message.includes("401") || e.message.includes("Authentication")) {
@@ -127,6 +153,42 @@ export default function DeployPage() {
       loadRepos();
     }
   }, [router]);
+
+  async function refreshRepoClassification(owner: string, repo: string, ref?: string) {
+    const fullName = `${owner}/${repo}`;
+
+    setRepoClassifications((prev) => ({
+      ...prev,
+      [fullName]: {
+        loading: true,
+        value: prev[fullName]?.value,
+      },
+    }));
+
+    try {
+      const value = await classifyRepoTechStack(owner, repo, ref);
+      setRepoClassifications((prev) => ({
+        ...prev,
+        [fullName]: {
+          loading: false,
+          value,
+        },
+      }));
+
+      if (value.defaultRootDirectory && (!rootDirectory || rootDirectory.trim() === "")) {
+        setRootDirectory(value.defaultRootDirectory);
+      }
+    } catch (error: unknown) {
+      setRepoClassifications((prev) => ({
+        ...prev,
+        [fullName]: {
+          loading: false,
+          value: prev[fullName]?.value,
+          error: error instanceof Error ? error.message : "Failed to classify repository",
+        },
+      }));
+    }
+  }
 
   useEffect(() => {
     if (!selectedRepo) return;
@@ -194,6 +256,14 @@ export default function DeployPage() {
 
     const parsedEnvVars = parseDotEnv(dotEnvText);
 
+    const selectedClassification = selectedRepo ? repoClassifications[selectedRepo]?.value : undefined;
+    const classificationPreset = selectedClassification?.techStack;
+
+    if (selectedRepoClassification?.loading) {
+      setErrMsg("Verifying selected repository stack. Please wait a moment and retry.");
+      return;
+    }
+
     setStatus("deploying");
     setLogs([]);
     setReceipt(null);
@@ -203,12 +273,18 @@ export default function DeployPage() {
       projectName: string;
       envVars: EnvVarRow[];
       rootDirectory?: string;
+      appPreset?: string;
+      notes?: string;
     } = {
       projectName: trimmedProjectName,
       envVars: parsedEnvVars,
     };
     if (rootDirectory.trim()) {
       deployMeta.rootDirectory = rootDirectory.trim();
+    }
+    if (classificationPreset) {
+      deployMeta.appPreset = classificationPreset;
+      deployMeta.notes = `repo-tech-stack=${classificationPreset}; confidence=${selectedClassification?.confidence ?? 0}; source=${selectedClassification?.source ?? "unknown"}`;
     }
 
     abortRef.current = deployStream(
@@ -331,6 +407,34 @@ export default function DeployPage() {
                     </span>
                   </button>
 
+                  {selectedRepoClassification?.value && (
+                    <div className="mt-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-tg-muted uppercase tracking-wider">Detected Stack</span>
+                        <span
+                          className={`rounded-full px-2 py-1 font-bold uppercase tracking-wider text-[10px] ${
+                            selectedRepoClassification.value.techStack === "react"
+                              ? "bg-tg-lavender/20 text-tg-lavender"
+                              : "bg-tg-lime/20 text-tg-lime"
+                          }`}
+                        >
+                          {selectedRepoClassification.value.techStack}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-tg-muted">
+                        Confidence: {selectedRepoClassification.value.confidence}% • Source: {selectedRepoClassification.value.source}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedRepoClassification?.loading && (
+                    <p className="mt-2 text-xs text-tg-muted">Verifying repository tech stack...</p>
+                  )}
+
+                  {selectedRepoClassification?.error && (
+                    <p className="mt-2 text-xs text-amber-300">Repo classification unavailable: {selectedRepoClassification.error}</p>
+                  )}
+
                   {repoMenuOpen && (
                     <div className="absolute z-20 mt-2 w-full rounded-2xl border border-white/10 bg-[#0b0b0f] shadow-2xl overflow-hidden">
                       <div className="p-3 border-b border-white/10">
@@ -349,15 +453,22 @@ export default function DeployPage() {
                         ) : (
                           filteredRepos.map((repo) => {
                             const isActive = repo.fullName === selectedRepo;
+                            const classification = repoClassifications[repo.fullName];
+                            const classificationLabel = classification?.value?.techStack || "";
                             return (
                               <button
                                 key={repo.fullName}
                                 type="button"
-                                onClick={() => {
+                                onClick={async () => {
                                   setSelectedRepo(repo.fullName);
                                   setProjectName(toProjectName(repo.fullName));
                                   setRepoMenuOpen(false);
                                   setRepoQuery("");
+
+                                  const parsed = parseOwnerRepo(repo.fullName);
+                                  if (parsed) {
+                                    await refreshRepoClassification(parsed.owner, parsed.repo, repo.defaultBranch);
+                                  }
                                 }}
                                 className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${
                                   isActive
@@ -365,7 +476,16 @@ export default function DeployPage() {
                                     : "text-white hover:bg-white/5 border border-transparent"
                                 }`}
                               >
-                                {repo.fullName}
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate">{repo.fullName}</span>
+                                  {classification?.loading ? (
+                                    <span className="text-[10px] text-tg-muted uppercase">Checking...</span>
+                                  ) : classificationLabel ? (
+                                    <span className={`text-[10px] font-bold uppercase ${classificationLabel === "react" ? "text-tg-lavender" : "text-tg-lime"}`}>
+                                      {classificationLabel}
+                                    </span>
+                                  ) : null}
+                                </div>
                               </button>
                             );
                           })
@@ -405,7 +525,7 @@ export default function DeployPage() {
                   <>
                     <button
                       type="submit"
-                      disabled={!walletAddress}
+                      disabled={!walletAddress || Boolean(selectedRepoClassification?.loading)}
                       className="flex-1 bg-tg-lavender text-tg-black px-6 py-3 rounded-full font-bold text-sm tracking-wide hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       DEPLOY

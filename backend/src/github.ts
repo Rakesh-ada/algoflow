@@ -19,6 +19,28 @@ const JWT_SECRET = process.env.JWT_SECRET || "w3deploy-super-secret-key-change-m
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || "";
 const BACKEND_URL = process.env.BACKEND_URL || "";
 const WEBHOOK_SIGNATURE_PREFIX = "sha256=";
+const HF_MODEL_ID = process.env.HF_REPO_CLASSIFIER_MODEL || "smolify/smolified-algoflow";
+const HF_API_TOKEN = process.env.HF_API_TOKEN || "";
+
+type RepoTechStack = "react" | "html";
+type TechStackSource = "model" | "heuristic" | "fallback";
+
+type RepoTechStackResult = {
+  techStack: RepoTechStack;
+  confidence: number;
+  source: TechStackSource;
+  reasons: string[];
+  defaultRootDirectory: string;
+  buildCommand: string;
+  outputDirectory: string;
+  modelId?: string;
+};
+
+type GitHubContentItem = {
+  name?: string;
+  path?: string;
+  type?: string;
+};
 
 function normalizeWalletAddress(value: string): string {
   return value.trim().toUpperCase();
@@ -36,6 +58,211 @@ function getErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+async function githubJson<T = unknown>(accessToken: string, url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "User-Agent": "W3DEPLOY",
+      Accept: "application/vnd.github.v3+json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function getRepoContents(accessToken: string, owner: string, repo: string, ref?: string): Promise<GitHubContentItem[]> {
+  const suffix = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+  const data = await githubJson<unknown>(
+    accessToken,
+    `https://api.github.com/repos/${owner}/${repo}/contents${suffix}`
+  );
+
+  if (!Array.isArray(data)) return [];
+  return data as GitHubContentItem[];
+}
+
+function resolveDefaultRootDirectory(topLevelNames: Set<string>): string {
+  if (topLevelNames.has("frontend")) return "./frontend";
+  if (topLevelNames.has("client")) return "./client";
+  if (topLevelNames.has("web")) return "./web";
+  if (topLevelNames.has("app")) return "./app";
+  if (topLevelNames.has("src")) return "./";
+  return "./";
+}
+
+function heuristicClassifyRepoTechStack(topLevelItems: GitHubContentItem[]): RepoTechStackResult {
+  const names = new Set(
+    topLevelItems
+      .map((item) => (item.name || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  let reactSignals = 0;
+  let htmlSignals = 0;
+  const reasons: string[] = [];
+
+  const reactNameSignals = [
+    "package.json",
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+    "vite.config.js",
+    "vite.config.ts",
+    "vite.config.mjs",
+    "vite.config.mts",
+    "frontend",
+    "app",
+    "src",
+  ];
+
+  const htmlNameSignals = [
+    "index.html",
+    "public",
+    "assets",
+    "css",
+    "js",
+  ];
+
+  for (const signal of reactNameSignals) {
+    if (names.has(signal)) {
+      reactSignals += signal === "package.json" ? 3 : 1;
+      reasons.push(`Found ${signal} (React-app signal)`);
+    }
+  }
+
+  for (const signal of htmlNameSignals) {
+    if (names.has(signal)) {
+      htmlSignals += signal === "index.html" ? 3 : 1;
+      reasons.push(`Found ${signal} (static-site signal)`);
+    }
+  }
+
+  const hasPackageJson = names.has("package.json");
+  const hasStaticIndex = names.has("index.html");
+
+  if (hasPackageJson && !hasStaticIndex) {
+    reactSignals += 2;
+  }
+
+  if (hasStaticIndex && !hasPackageJson) {
+    htmlSignals += 2;
+  }
+
+  const score = reactSignals - htmlSignals;
+  const techStack: RepoTechStack = score >= 0 ? "react" : "html";
+  const confidence = Math.min(98, Math.max(55, 55 + Math.abs(score) * 8));
+
+  const defaultRootDirectory = resolveDefaultRootDirectory(names);
+
+  return {
+    techStack,
+    confidence,
+    source: "heuristic",
+    reasons,
+    defaultRootDirectory,
+    buildCommand: techStack === "react" ? "npm run build" : "",
+    outputDirectory: techStack === "react" ? "dist" : "",
+  };
+}
+
+function tryParseModelClassification(outputText: string): RepoTechStack | null {
+  const normalized = outputText.toLowerCase();
+  if (/(^|\b)(react|next|vite)(\b|$)/.test(normalized) && !/(^|\b)html(\b|$)/.test(normalized)) {
+    return "react";
+  }
+  if (/(^|\b)(html|static)(\b|$)/.test(normalized) && !/(^|\b)react(\b|$)/.test(normalized)) {
+    return "html";
+  }
+  if (/(react|next|vite)/.test(normalized)) return "react";
+  if (/(html|static)/.test(normalized)) return "html";
+  return null;
+}
+
+async function classifyWithHuggingFaceModel(topLevelItems: GitHubContentItem[]): Promise<RepoTechStackResult | null> {
+  if (!HF_MODEL_ID) return null;
+
+  const topLevelSummary = topLevelItems
+    .map((item) => `${item.type === "dir" ? "dir" : "file"}:${item.name || "unknown"}`)
+    .slice(0, 100)
+    .join(", ");
+
+  const prompt = [
+    "Classify this repository as one label only: react OR html.",
+    "Return the single word label first.",
+    `Top-level entries: ${topLevelSummary}`,
+  ].join("\n");
+
+  try {
+    const response = await fetch(`https://api-inference.huggingface.co/models/${encodeURIComponent(HF_MODEL_ID)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(HF_API_TOKEN ? { Authorization: `Bearer ${HF_API_TOKEN}` } : {}),
+      },
+      body: JSON.stringify({
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 12,
+          return_full_text: false,
+          temperature: 0.1,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    const generatedText = Array.isArray(data)
+      ? (data[0]?.generated_text as string | undefined)
+      : (data?.generated_text as string | undefined);
+
+    if (!generatedText) return null;
+
+    const label = tryParseModelClassification(generatedText);
+    if (!label) return null;
+
+    return {
+      techStack: label,
+      confidence: 85,
+      source: "model",
+      reasons: [`Model ${HF_MODEL_ID} classified repository as ${label}.`],
+      defaultRootDirectory: "./",
+      buildCommand: label === "react" ? "npm run build" : "",
+      outputDirectory: label === "react" ? "dist" : "",
+      modelId: HF_MODEL_ID,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function classifyRepoTechStack(topLevelItems: GitHubContentItem[]): Promise<RepoTechStackResult> {
+  const modelResult = await classifyWithHuggingFaceModel(topLevelItems);
+  if (modelResult) {
+    const names = new Set(
+      topLevelItems
+        .map((item) => (item.name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    return {
+      ...modelResult,
+      defaultRootDirectory: resolveDefaultRootDirectory(names),
+    };
+  }
+
+  const heuristicResult = heuristicClassifyRepoTechStack(topLevelItems);
+  return {
+    ...heuristicResult,
+    source: HF_MODEL_ID ? "heuristic" : "fallback",
+  };
 }
 
 function verifyWebhookSignature(rawBody: string, signatureHeader?: string | null): boolean {
@@ -143,6 +370,39 @@ githubRouter.get("/repos/:owner/:repo/branches", authMiddleware, async (c) => {
     return c.json({ branches });
   } catch {
     return c.json({ branches: ["main"] });
+  }
+});
+
+githubRouter.get("/repos/:owner/:repo/classify", authMiddleware, async (c) => {
+  const user = c.get("jwtPayload") as any;
+  const owner = c.req.param("owner");
+  const repo = c.req.param("repo");
+  const ref = (c.req.query("ref") || "").trim() || undefined;
+
+  if (!owner || !repo) {
+    return c.json({ error: "owner and repo are required" }, 400);
+  }
+
+  try {
+    const topLevelItems = await getRepoContents(user.accessToken, owner, repo, ref);
+    const classification = await classifyRepoTechStack(topLevelItems);
+
+    return c.json({
+      owner,
+      repo,
+      ref: ref || null,
+      techStack: classification.techStack,
+      confidence: classification.confidence,
+      source: classification.source,
+      reasons: classification.reasons,
+      defaultRootDirectory: classification.defaultRootDirectory,
+      buildCommand: classification.buildCommand,
+      outputDirectory: classification.outputDirectory,
+      modelId: classification.modelId || null,
+      scannedItems: topLevelItems.map((item) => item.name).filter(Boolean),
+    });
+  } catch (error) {
+    return c.json({ error: `Failed to classify repository: ${getErrorMessage(error)}` }, 500);
   }
 });
 
